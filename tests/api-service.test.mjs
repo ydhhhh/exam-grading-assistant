@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {handleAPI,estimateCny,PACK_SCHEMA,RESULT_SCHEMA,API_SETTINGS} from '../lib/grading/api-service.mjs';
+const fixturePack=()=>({exam_id:'EXAM',title:'Synthetic only',version:'v1',demo:false,approved_by:'Teacher',policies:'Use stated rubric; no invented conditions.',questions:[{question_id:'Q1',text:'Find P(A).',solution:'0.5',max_score:5,criteria:[{criterion_id:'C1',description:'Method',allowed_scores:[0,1,2],requires:[]},{criterion_id:'C2',description:'Result',allowed_scores:[0,1.5,3],requires:[]}]}]});
+const fixtureResult=()=>({question_id:'Q1',status:'scored',criteria:[{criterion_id:'C1',awarded:2,evidence_refs:['P1'],reason:'method observed'},{criterion_id:'C2',awarded:3,evidence_refs:['P1'],reason:'result observed'}],flags:[],alternative_solution:false});
+
+const KEY='test-placeholder-key-no-live-call';
+async function file(){const bytes=Uint8Array.from([137,80,78,71,13,10,26,10]);const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');return {name:'private-student-name.png',mime:'image/png',data:btoa(String.fromCharCode(...bytes)),sha256};}
+async function body(){return {pack:fixturePack(),questionId:'Q1',pages:[{page_id:'P1',...await file()}],lane:'A',requestId:'request-001'};}
+function request(data,headers={},url='https://grading.example/api/grade'){return new Request(url,{method:'POST',headers:{origin:new URL(url).origin,'content-type':'application/json','x-api-key':KEY,...headers},body:JSON.stringify(data)});}
+const envelope=(value=fixtureResult(),extra={})=>({id:'resp-synthetic',model:'gpt-6.1-terra',status:'completed',usage:{input_tokens:1000,output_tokens:200},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(value)}]}],...extra});
+const response=(value,status=200,headers={})=>new Response(JSON.stringify(value),{status,headers});
+async function call(data,apiResponse=envelope(),status=200){let calls=[];const r=await handleAPI(request(data),'grade',async(url,opts)=>{calls.push({url,opts});return response(apiResponse,status,{'x-request-id':'provider-id'});});return {r,data:await r.json(),calls};}
+
+test('valid grade request uses independent scoped context and no tools/state',async()=>{const b=await body();const x=await call(b);assert.equal(x.r.status,200);assert.equal(x.calls.length,1);const {url,opts}=x.calls[0];assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,`Bearer ${KEY}`);const sent=JSON.parse(opts.body);assert.equal(sent.store,false);assert.equal(sent.model,API_SETTINGS.model);assert.equal(sent.tools,undefined);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.text.format.strict,true);assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'provider-id');assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');});
+test('second lane never receives first lane response',async()=>{const b=await body();b.lane='B';const x=await call(b);assert.ok(!x.calls[0].opts.body.includes('method observed'));});
+test('foreign origin blocked before external fetch',async()=>{let n=0;const r=await handleAPI(request(await body(),{origin:'https://evil.example'}),'grade',()=>{n++;});assert.equal(r.status,403);assert.equal(n,0);});
+test('missing key and unsupported method do not send',async()=>{for(const req of [request(await body(),{'x-api-key':''}),new Request('https://grading.example/api/grade')]){let n=0;const r=await handleAPI(req,'grade',()=>{n++;});assert.ok(r.status>=400);assert.equal(n,0);}});
+test('demo pack and extra secret field never reach external API',async()=>{for(const change of [b=>b.pack.demo=true,b=>b.apiKey='forbidden']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
+test('unapproved pack unknown question and page ID are blocked',async()=>{for(const change of [b=>b.pack.approved_by='',b=>b.questionId='Q2',b=>b.pages[0].page_id='P9']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
+test('changed hash or file format fails locally',async()=>{for(const change of [b=>b.pages[0].sha256='0'.repeat(64),b=>b.pages[0].mime='application/pdf']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
+test('unrecognized answer files and malformed base64 blocked',async()=>{for(const change of [b=>b.pages[0].mime='text/plain',b=>b.pages[0].data='%%%%']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
+test('request stream cap is independent of declared content length',async()=>{let n=0;const req=new Request('https://grading.example/api/grade',{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-key':KEY,'content-length':'1'},body:'a'.repeat(10*1024*1024+1)});const r=await handleAPI(req,'grade',()=>{n++;});assert.equal(r.status,413);assert.equal(n,0);});
+test('incomplete response preserves usage and raw but no score',async()=>{const x=await call(await body(),envelope(undefined,{status:'incomplete'}));assert.equal(x.data.code,'INCOMPLETE');assert.equal(x.data.result,undefined);assert.equal(x.data.estimatedCny,0.015);assert.ok(x.data.raw);});
+test('refusal empty output and invalid JSON remain failures',async()=>{for(const [value,code] of [[envelope(undefined,{output:[{content:[{type:'refusal',refusal:'No'}]}]}),'REFUSAL'],[envelope(undefined,{output:[]}), 'EMPTY_OUTPUT'],[envelope(undefined,{output:[{content:[{type:'output_text',text:'{broken'}]}]}),'INVALID_RESULT_JSON']]){const x=await call(await body(),value);assert.equal(x.data.code,code);assert.equal(x.data.result,undefined);assert.ok(x.data.usage);}});
+test('invalid scoring semantics returns paid failure not zero',async()=>{const result=fixtureResult();result.criteria[0].awarded=99;const x=await call(await body(),envelope(result));assert.equal(x.data.code,'VALIDATION');assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.result,undefined);});
+test('successful unknown usage has null estimate',async()=>{const x=await call(await body(),envelope(undefined,{usage:undefined}));assert.equal(x.r.status,200);assert.equal(x.data.estimatedCny,null);assert.equal(x.data.usage,null);});
+test('usage with bool negative or fractional counts is unknown',()=>{for(const u of [{input_tokens:true,output_tokens:0},{input_tokens:2.5,output_tokens:1},{input_tokens:-1,output_tokens:1}])assert.equal(estimateCny(u),null);});
+test('long context includes higher rates and reasoning not added twice',()=>{assert.equal(estimateCny({input_tokens:300000,output_tokens:10000}),5.0625);assert.equal(estimateCny({input_tokens:1000,output_tokens:200,reasoning_tokens:150}),0.015);});
+test('network uncertainty makes one request and has no leaked exception',async()=>{let n=0;const r=await handleAPI(request(await body()),'grade',async()=>{n++;throw Error(KEY);});const data=await r.json();assert.equal(n,1);assert.equal(data.uncertain,true);assert.ok(!JSON.stringify(data).includes(KEY));});
+test('rate limit and quota are explicit and never auto retry',async()=>{for(const [code,expected] of [['rate_limit_exceeded','RATE_LIMIT'],['insufficient_quota','QUOTA']]){const x=await call(await body(),{error:{code}},429);assert.equal(x.calls.length,1);assert.equal(x.data.code,expected);assert.equal(x.data.uncertain,false);}});
+test('authentication and upstream errors distinguished',async()=>{const auth=await call(await body(),{error:{message:KEY}},401);assert.equal(auth.data.code,'AUTH');assert.equal(auth.data.uncertain,false);assert.ok(!JSON.stringify(auth.data).includes(KEY));const upstream=await call(await body(),{error:{message:'bad'}},500);assert.equal(upstream.data.uncertain,true);});
+test('upstream raw headers cannot leak arbitrary metadata',async()=>{const x=await call(await body(),envelope(undefined,{secret_echo:KEY}));assert.ok(!JSON.stringify(x.data).includes(KEY));assert.ok(x.data.raw.includes('[REDACTED]'));assert.equal(x.data.headers,undefined);});
+test('oversized upstream body is uncertain and bounded',async()=>{const r=await handleAPI(request(await body()),'grade',async()=>new Response('a'.repeat(2*1024*1024+1)));const data=await r.json();assert.equal(data.code,'RESPONSE_TOO_LARGE');assert.equal(data.uncertain,true);});
+test('prepare extracts draft with neutral names, warnings block readiness',async()=>{const documents=[];for(const role of ['paper','solution','rubric'])documents.push({role,...await file()});const p=fixturePack();p.approved_by='';for(const warnings of [[],['部分分政策尚未提供']]){let opts;const r=await handleAPI(request({documents,requestId:'prep-1'}, {},'https://grading.example/api/prepare'),'prepare',async(_url,o)=>{opts=o;return response(envelope({pack:p,warnings}));});const data=await r.json();assert.equal(r.status,200);assert.equal(data.ready,!warnings.length);assert.equal(data.pack.approved_by,'');assert.equal(data.documentHashes.paper,documents[0].sha256);assert.ok(!opts.body.includes('private-student-name'));}});
+test('prepare cannot invent approval and empty pack cannot proceed',async()=>{const documents=[];for(const role of ['paper','solution','rubric'])documents.push({role,...await file()});for(const p of [fixturePack(),{...fixturePack(),approved_by:'',questions:[]}]){const r=await handleAPI(request({documents,requestId:'prep-2'}),'prepare',async()=>response(envelope({pack:p,warnings:[]})));assert.equal(r.status,422);}});
+test('strict schemas mark all object keys required and forbid extra fields',()=>{function check(s){if(s.type==='object'){assert.equal(s.additionalProperties,false);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());Object.values(s.properties).forEach(check);}if(s.items)check(s.items);}check(PACK_SCHEMA);check(RESULT_SCHEMA);});
+
+test('single file and combined decoded byte caps reject before upstream send',async()=>{
+  let b=await body();b.pages[0].data='A'.repeat(4*Math.ceil((3*1024*1024+1)/3));
+  let x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);assert.equal(x.data.uncertain,false);
+  b=await body();const page=b.pages[0];b.pages=[1,2,3].map(i=>({...page,page_id:'P'+i,data:'A'.repeat(4*Math.ceil((2*1024*1024+1)/3))}));
+  x=await call(b);assert.equal(x.data.code,'FILES_TOO_LARGE');assert.equal(x.calls.length,0);
+});
+test('per-instance in-flight cap rejects third request without reading or charging it and releases slots',async()=>{
+  let sendCount=0,release;const gate=new Promise(resolve=>{release=resolve;});
+  let ready;const started=new Promise(resolve=>{ready=resolve;});
+  const transport=async()=>{sendCount++;if(sendCount===2)ready();await gate;return response(envelope());};
+  const first=handleAPI(request(await body()),'grade',transport);
+  const second=handleAPI(request(await body()),'grade',transport);
+  await started;
+  const busy=await handleAPI(request(await body()),'grade',transport);const data=await busy.json();
+  assert.equal(busy.status,429);assert.equal(data.code,'SERVER_BUSY');assert.equal(data.uncertain,false);assert.equal(data.estimatedCny,0);assert.equal(sendCount,2);
+  release();assert.deepEqual((await Promise.all([first,second])).map(r=>r.status),[200,200]);
+  assert.equal((await call(await body())).r.status,200);
+});
+test('caller-provided provider URL cannot redirect keys to another host',async()=>{
+  const b=await body();b.endpoint='https://attacker.example/collect';const x=await call(b);
+  assert.equal(x.calls.length,0);assert.equal(x.data.code,'VALIDATION');
+});
