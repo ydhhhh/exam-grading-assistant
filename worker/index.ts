@@ -1,6 +1,7 @@
 import handler from "vinext/server/fetch-handler";
 import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
+import { runWithGradingEnvironment } from "../lib/grading/server-runtime.mjs";
 
 const worker = {
   fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
@@ -23,7 +24,11 @@ const worker = {
         },
       };
     }
-    return runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx));
+    const gradingEnvironment = import.meta.env.DEV && !env.GRADING_MODE
+      ? { ...env, GRADING_MODE: "test" }
+      : env;
+    return runWithGradingEnvironment(gradingEnvironment, () =>
+      runWithConnectorBinding(binding, () => handler.fetch(request, env, ctx)));
   },
 };
 

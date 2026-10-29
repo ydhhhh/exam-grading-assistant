@@ -1,3 +1,4 @@
+import {renderPDF} from './helpers/pdf-rendering.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
@@ -14,7 +15,7 @@ const stored=[];const persist=async job=>{stored.push(snapshotJob(job));};
 function result(questionId){return {question_id:questionId,status:'scored',criteria:[{criterion_id:'C1',awarded:1,evidence_refs:['P1'],reason:'合成依据'},{criterion_id:'C2',awarded:2,evidence_refs:['P1'],reason:'合成依据'}],flags:[],alternative_solution:false};}
 function response(questionId,cost=0.01){return {result:result(questionId),usage:{input_tokens:100,output_tokens:100},requestId:'server-r1',responseId:'resp1',model:'mock',raw:'raw-result',estimatedCny:cost};}
 const asResponse=(obj,status=200)=>new Response(JSON.stringify(obj),{status,headers:{'Content-Type':'application/json'}});
-function runnerOptions(fetcher,options={}){let ms=100000;return {apiKey:'sk-test-DO-NOT-STORE',locks,persist,load:async()=>null,fetcher,clock:()=>ms,sleep:async wait=>{ms+=wait;},...options};}
+function runnerOptions(fetcher,options={}){let ms=100000;return {renderPDF,apiKey:'sk-test-DO-NOT-STORE',locks,persist,load:async()=>null,fetcher,clock:()=>ms,sleep:async wait=>{ms+=wait;},...options};}
 
 test('canonical fingerprints sort keys and reject undefined/nonfinite',async()=>{
  assert.equal(canonical({b:2,a:1}),'{"a":1,"b":2}');assert.equal(await hashJSON({b:2,a:1}),await hashJSON({a:1,b:2}));assert.throws(()=>canonical({a:undefined}));assert.throws(()=>canonical(NaN));
@@ -89,10 +90,11 @@ test('invalid/refused response cost is recorded and no zero grade is fabricated'
  await runJob(job,runnerOptions(async()=>asResponse({error:'拒答',code:'REFUSAL',uncertain:false,estimatedCny:.02,usage:{input_tokens:100,output_tokens:5}},400)));
  assert.equal(job.spentCny,.04);assert.equal(job.tasks[0].result,null);assert.match(exportCSV(job),/未完成/);
 });
-test('success without reported usage keeps estimated reserve held',async()=>{
- const job=await createJob(pack(),files());
- await runJob(job,runnerOptions(async(_,opt)=>asResponse({...response(JSON.parse(opt.body).questionId),usage:null,estimatedCny:null})));
- assert.equal(job.spentCny,0);assert.equal(job.heldCny,10);await importBackup(snapshotJob(job));
+test('success without reported usage preserves the result and reserve and pauses new requests',async()=>{
+ const job=await createJob(pack(),files(),{concurrency:1});
+ const out=await runJob(job,runnerOptions(async(_,opt)=>asResponse({...response(JSON.parse(opt.body).questionId),usage:null,estimatedCny:null})));
+ assert.equal(out.paused,true);assert.equal(out.requests,1);assert.equal(job.tasks[0].state,'done');assert.equal(job.tasks[1].state,'ready');
+ assert.equal(job.spentCny,0);assert.equal(job.heldCny,5);await importBackup(snapshotJob(job));
 });
 test('key echoed from failed server is redacted before persistence',async()=>{
  const job=await createJob(pack(),files());await runJob(job,runnerOptions(async()=>asResponse({error:'sk-test-DO-NOT-STORE',raw:'sk-test-DO-NOT-STORE',uncertain:false},401)));
@@ -104,7 +106,7 @@ test('storage failure before request makes zero network calls',async()=>{
 });
 test('page restart marks inflight uncertain and preserves reserve',async()=>{
  const job=await createJob(pack(),files());const t=job.tasks[0];
- t.attempts.push({id:'interrupted',kind:'grade',state:'in_flight',reservedCny:5,costCny:null,sentAt:new Date().toISOString()});t.state='running';job.heldCny=5;
+ t.attempts.push({id:'interrupted',kind:'grade',inputs:t.pages.map(p=>({page_id:p.page_id,sourceSha256:p.sha256,sourceMime:p.mime,sha256:p.sha256,mime:p.mime,size:p.size,renderVersion:'original-v1'})),state:'in_flight',reservedCny:5,costCny:null,sentAt:new Date().toISOString()});t.state='running';job.heldCny=5;
  const restored=await importBackup(snapshotJob(job));assert.equal(restored.tasks[0].state,'uncertain');assert.equal(restored.heldCny,5);
 });
 test('saved API response restores without reissuing that request',async()=>{
@@ -230,7 +232,7 @@ test('student PDF maps only answer pages to tasks and identity before all grades
  assert.equal(job.inputMode,'student_pdf');assert.equal(doc.pageCount,3);assert.equal(doc.cover.sourcePage,1);assert.equal(job.tasks[0].pages[0].sourcePage,2);assert.equal(job.tasks[1].pages[0].sourcePage,3);
  let calls=[];await runJob(job,runnerOptions(async(url,options)=>{
   calls.push(url);const body=JSON.parse(options.body);
-  if(url==='/api/identity'){assert.equal(body.page.sha256,doc.cover.sha256);assert.equal(body.page.name,'identity-page.pdf');assert.equal(stored.at(-1).documents[0].attempts[0].state,'in_flight');return asResponse({identity:identity(),estimatedCny:.01});}
+  if(url==='/api/identity'){assert.notEqual(body.page.sha256,doc.cover.sha256);assert.equal(body.page.mime,'image/jpeg');assert.equal(body.page.name,'identity-page.jpeg');assert.equal(stored.at(-1).documents[0].attempts[0].inputs[0].sourceSha256,doc.cover.sha256);assert.equal(stored.at(-1).documents[0].attempts[0].state,'in_flight');return asResponse({identity:identity(),estimatedCny:.01});}
   assert.ok(body.pages.every(p=>p.sha256!==doc.cover.sha256));assert.ok(!options.body.includes('0012345678'));assert.ok(!options.body.includes('测试甲'));return asResponse(response(body.questionId));
  }));
  assert.deepEqual(calls,['/api/identity','/api/grade','/api/grade']);assert.equal(job.spentCny,.03);assert.equal(job.heldCny,0);assert.equal(doc.studentId,'0012345678');assert.equal(doc.name,'测试甲');assert.equal(taskAdvice(job,job.tasks[0]).total,3);

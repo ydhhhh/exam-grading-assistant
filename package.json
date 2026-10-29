@@ -6,6 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "postinstall": "node scripts/sync-pdf-assets.mjs",
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
     "build": "node scripts/run-framework.mjs build",
@@ -28,6 +29,7 @@
     "next": "16.3.4",
     "next-themes": "^0.4.6",
     "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.4.299",
     "radix-ui": "^1.6.7",
     "react": "19.2.6",
     "react-day-picker": "^10.0.1",
@@ -41,6 +43,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "1.0.10",
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
     "@tailwindcss/postcss": "4.2.1",

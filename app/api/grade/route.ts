@@ -1,3 +1,3 @@
-import { handleAPI } from "@/lib/grading/api-service.mjs";
+import { handleRuntimeAPI } from "@/lib/grading/api-service.mjs";
 export const dynamic = "force-dynamic";
-export async function POST(request: Request) { return handleAPI(request, "grade"); }
+export async function POST(request: Request) { return handleRuntimeAPI(request, "grade"); }

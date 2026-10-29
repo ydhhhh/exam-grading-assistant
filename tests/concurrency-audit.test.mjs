@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PDFDocument} from 'pdf-lib';
+import {renderPDF} from './helpers/pdf-rendering.mjs';
 import {createStudentPDFJob, resolveStudentIdentity, runJob, snapshotJob, importBackup, rebindJob} from '../lib/grading/browser-workflow.mjs';
 
 // Independent scheduler audit: synthetic pages and controllable network/storage only.
 const locks={request:async(_name,_options,fn)=>fn({name:'audit-lock'})};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
-async function until(predicate){for(let i=0;i<5000;i++){if(predicate())return;await tick();}throw Error('Audit condition was not reached');}
+async function until(predicate){const deadline=Date.now()+5000;while(Date.now()<deadline){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,1));}throw Error('Audit condition was not reached within 5 seconds');}
 function result(questionId){return {question_id:questionId,status:'scored',criteria:[{criterion_id:'C1',awarded:1,evidence_refs:['P1'],reason:'Synthetic evidence'}],flags:[],alternative_solution:false};}
 function response(questionId,cost=.125){return new Response(JSON.stringify({result:result(questionId),usage:{input_tokens:10,output_tokens:10},estimatedCny:cost,model:'mock',raw:'synthetic result'}),{status:200,headers:{'content-type':'application/json'}});}
 async function readyJob(count=8,settings={}){
@@ -16,7 +17,7 @@ async function readyJob(count=8,settings={}){
  const file=new File([await pdf.save()],'9000000099.pdf',{type:'application/pdf'});
  const job=await createStudentPDFJob(pack,[file],settings);resolveStudentIdentity(job,job.documents[0].id,{studentId:'9000000099',name:'Synthetic'});return {job,file};
 }
-function opts(fetcher,extra={}){return {apiKey:'audit-key-never-persist',locks,fetcher,persist:async()=>{},load:async()=>null,isOnline:()=>true,...extra};}
+function opts(fetcher,extra={}){return {renderPDF,apiKey:'audit-key-never-persist',locks,fetcher,persist:async()=>{},load:async()=>null,isOnline:()=>true,...extra};}
 function gatedFetcher(){const calls=[];let active=0,peak=0;return {calls,get active(){return active;},get peak(){return peak;},fetcher:async(url,options)=>{assert.equal(url,'/api/grade');const body=JSON.parse(options.body);const gate=deferred();calls.push({body,...gate});active++;peak=Math.max(peak,active);try{return await gate.promise;}finally{active--;}}};}
 
 test('audit: four requests stay bounded and reversed completion writes never overlap or erase prior results',{timeout:10000},async()=>{

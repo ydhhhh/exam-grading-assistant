@@ -12,7 +12,7 @@ const envelope=(value=fixtureResult(),extra={})=>({id:'resp-synthetic',model:'gp
 const response=(value,status=200,headers={})=>new Response(JSON.stringify(value),{status,headers});
 async function call(data,apiResponse=envelope(),status=200){let calls=[];const r=await handleAPI(request(data),'grade',async(url,opts)=>{calls.push({url,opts});return response(apiResponse,status,{'x-request-id':'provider-id'});});return {r,data:await r.json(),calls};}
 
-test('valid grade request uses independent scoped context and no tools/state',async()=>{const b=await body();const x=await call(b);assert.equal(x.r.status,200);assert.equal(x.calls.length,1);const {url,opts}=x.calls[0];assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,`Bearer ${KEY}`);const sent=JSON.parse(opts.body);assert.equal(sent.store,false);assert.equal(sent.model,API_SETTINGS.model);assert.equal(sent.tools,undefined);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.text.format.strict,true);assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'provider-id');assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');});
+test('valid grade request uses independent scoped context and no tools/state',async()=>{const b=await body();const x=await call(b);assert.equal(x.r.status,200);assert.equal(x.calls.length,1);const {url,opts}=x.calls[0];assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'manual');assert.equal(opts.headers.authorization,`Bearer ${KEY}`);const sent=JSON.parse(opts.body);assert.equal(sent.store,false);assert.equal(sent.model,API_SETTINGS.model);assert.equal(sent.tools,undefined);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.text.format.strict,true);assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'provider-id');assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');});
 test('unknown grading routing field is rejected before any API call',async()=>{const b=await body();b.lane='obsolete';const x=await call(b);assert.equal(x.r.status,422);assert.equal(x.data.code,'VALIDATION');assert.equal(x.calls.length,0);});
 test('foreign origin blocked before external fetch',async()=>{let n=0;const r=await handleAPI(request(await body(),{origin:'https://evil.example'}),'grade',()=>{n++;});assert.equal(r.status,403);assert.equal(n,0);});
 test('missing key and unsupported method do not send',async()=>{for(const req of [request(await body(),{'x-api-key':''}),new Request('https://grading.example/api/grade')]){let n=0;const r=await handleAPI(req,'grade',()=>{n++;});assert.ok(r.status>=400);assert.equal(n,0);}});
@@ -22,7 +22,7 @@ test('changed hash or file format fails locally',async()=>{for(const change of [
 test('unrecognized answer files and malformed base64 blocked',async()=>{for(const change of [b=>b.pages[0].mime='text/plain',b=>b.pages[0].data='%%%%']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
 test('request stream cap is independent of declared content length',async()=>{let n=0;const req=new Request('https://grading.example/api/grade',{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-key':KEY,'content-length':'1'},body:'a'.repeat(10*1024*1024+1)});const r=await handleAPI(req,'grade',()=>{n++;});assert.equal(r.status,413);assert.equal(n,0);});
 test('incomplete response preserves usage and raw but no score',async()=>{const x=await call(await body(),envelope(undefined,{status:'incomplete'}));assert.equal(x.data.code,'INCOMPLETE');assert.equal(x.data.result,undefined);assert.equal(x.data.estimatedCny,0.015);assert.ok(x.data.raw);});
-test('refusal empty output and invalid JSON remain failures',async()=>{for(const [value,code] of [[envelope(undefined,{output:[{content:[{type:'refusal',refusal:'No'}]}]}),'REFUSAL'],[envelope(undefined,{output:[]}), 'EMPTY_OUTPUT'],[envelope(undefined,{output:[{content:[{type:'output_text',text:'{broken'}]}]}),'INVALID_RESULT_JSON']]){const x=await call(await body(),value);assert.equal(x.data.code,code);assert.equal(x.data.result,undefined);assert.ok(x.data.usage);}});
+test('refusal empty output and invalid JSON remain failures',async()=>{for(const [value,code] of [[envelope(undefined,{output:[{type:'message',content:[{type:'refusal',refusal:'No'}]}]}),'REFUSAL'],[envelope(undefined,{output:[]}), 'EMPTY_OUTPUT'],[envelope(undefined,{output:[{type:'message',content:[{type:'output_text',text:'{broken'}]}]}),'INVALID_RESULT_JSON']]){const x=await call(await body(),value);assert.equal(x.data.code,code);assert.equal(x.data.result,undefined);assert.ok(x.data.usage);}});
 test('invalid scoring semantics returns paid failure not zero',async()=>{const result=fixtureResult();result.criteria[0].awarded=99;const x=await call(await body(),envelope(result));assert.equal(x.data.code,'VALIDATION');assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.result,undefined);});
 test('successful unknown usage has null estimate',async()=>{const x=await call(await body(),envelope(undefined,{usage:undefined}));assert.equal(x.r.status,200);assert.equal(x.data.estimatedCny,null);assert.equal(x.data.usage,null);});
 test('usage with bool negative or fractional counts is unknown',()=>{for(const u of [{input_tokens:true,output_tokens:0},{input_tokens:2.5,output_tokens:1},{input_tokens:-1,output_tokens:1}])assert.equal(estimateCny(u),null);});
@@ -67,6 +67,42 @@ test('caller-provided provider URL cannot redirect keys to another host',async()
   assert.equal(x.calls.length,0);assert.equal(x.data.code,'VALIDATION');
 });
 
+test('Workers-compatible fetch blocks redirects without forwarding keys or adopting a score',async()=>{
+  for(const provider of ['openai','deepseek'])for(const status of [301,302,303,307,308]){
+    let calls=0;
+    const r=await handleAPI(request(await body(),{'x-api-provider':provider}),'grade',async(url,options)=>{
+      calls++;
+      // Workers throws before sending when redirect:error is used.
+      if(options.redirect==='error')throw new TypeError('Invalid redirect value');
+      assert.equal(options.redirect,'manual');
+      assert.equal(new URL(url).hostname,provider==='deepseek'?'api.deepseek.com':'api.openai.com');
+      return response(envelope(),status,{location:'https://untrusted.example/collect'});
+    });
+    const data=await r.json();
+    assert.equal(calls,1);assert.equal(r.status,502);assert.equal(data.code,'UPSTREAM_REDIRECT');
+    assert.equal(data.uncertain,true);assert.equal(data.estimatedCny,null);assert.equal(data.result,undefined);
+    assert.ok(!JSON.stringify(data).includes(KEY));assert.ok(!JSON.stringify(data).includes('untrusted.example'));
+  }
+});
+
+test('question-specific output schema binds each allowed score to its own criterion and evidence',async()=>{
+  const b=await body();b.questionId='Q8';const q=b.pack.questions[0];q.question_id='Q8';
+  q.criteria[0].allowed_scores=[0,2,4];q.criteria[1].criterion_id='C4';q.criteria[1].allowed_scores=[0,1];
+  const bad=fixtureResult();bad.question_id='Q8';bad.criteria[0].awarded=4;bad.criteria[1].criterion_id='C4';bad.criteria[1].awarded=2;
+  const x=await call(b,envelope(bad));
+  const schema=JSON.parse(x.calls[0].opts.body).text.format.schema;
+  assert.deepEqual(schema.properties.question_id.enum,['Q8']);
+  const branches=schema.properties.criteria.items.anyOf;
+  assert.equal(branches.length,2);
+  const c4=branches.find(s=>s.properties.criterion_id.enum.includes('C4'));
+  assert.deepEqual(c4.properties.awarded.enum,[0,1,null]);
+  assert.deepEqual(c4.properties.evidence_refs.items.enum,['P1']);
+  assert.ok(!branches.some(s=>s.properties.criterion_id.enum.includes('C4')&&s.properties.awarded.enum.includes(2)));
+  assert.equal(x.data.code,'VALIDATION');assert.equal(x.data.result,undefined);assert.equal(x.data.estimatedCny,0.015);
+  assert.match(x.data.error,/Q8 \/ C4返回2分/);assert.match(x.data.error,/允许档位为0、1分/);assert.ok(x.data.raw);
+  for(const s of branches){assert.equal(s.additionalProperties,false);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());}
+});
+
 const fixtureIdentity=()=>({name:'合成姓名',student_id:'001234',name_status:'readable',student_id_status:'readable',warnings:[]});
 async function identityBody(){return {page:{page_id:'P1',...await file()},requestId:'identity-001'};}
 async function identityCall(data,apiResponse=envelope(fixtureIdentity()),status=200){const calls=[];const r=await handleAPI(request(data,{},'https://grading.example/api/identity'),'identity',async(url,opts)=>{calls.push({url,opts});return response(apiResponse,status,{'x-request-id':'identity-provider'});});return {r,data:await r.json(),calls};}
@@ -82,19 +118,20 @@ test('identity OCR has one independent neutral page, no grading materials, and p
   const x=await identityCall(await identityBody());assert.equal(x.r.status,200);assert.deepEqual(x.data.identity,fixtureIdentity());assert.equal(x.data.result,undefined);
   assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'identity-provider');assert.ok(x.data.raw);assert.equal(x.calls.length,1);
   const {url,opts}=x.calls[0],sent=JSON.parse(opts.body);
-  assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'error');assert.equal(sent.store,false);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.tools,undefined);
+  assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'manual');assert.equal(sent.store,false);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.tools,undefined);
   assert.equal(sent.text.format.name,'student_identity');assert.equal(sent.text.format.strict,true);assert.equal(sent.input.length,1);
   assert.equal(sent.input[0].content.filter(c=>['input_image','input_file'].includes(c.type)).length,1);
   assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.ok(!opts.body.includes('Use stated rubric'));
   for(const phrase of ['姓名','学号','授课教师','考场纪律','不使用文件名','不执行','打印示例','前导零'])assert.ok(sent.instructions.includes(phrase));
   assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');
 });
-test('single-page identity PDF is accepted and multi-page or corrupt PDFs are blocked before API',async()=>{
-  let x=await identityCall({page:await identityPDF(),requestId:'identity-pdf'});assert.equal(x.r.status,200);
-  const sent=JSON.parse(x.calls[0].opts.body);assert.equal(sent.input[0].content[1].filename,'identity-page.pdf');
-  x=await identityCall({page:await identityPDF(2),requestId:'identity-two-pages'});assert.equal(x.data.code,'IDENTITY_PAGE_COUNT');assert.equal(x.calls.length,0);assert.equal(x.data.uncertain,false);
+test('raw identity PDFs of any page count are blocked before API; only visible raster pages may be sent',async()=>{
+  for(const count of [1,2]){
+    const x=await identityCall({page:await identityPDF(count),requestId:'identity-raw-pdf-'+count});
+    assert.equal(x.data.code,'FILE_TYPE');assert.equal(x.calls.length,0);assert.equal(x.data.uncertain,false);assert.equal(x.data.notSent,true);assert.equal(x.data.estimatedCny,0);
+  }
   const broken=Buffer.from('%PDF-1.7\ninvalid');const page={page_id:'P1',name:'broken.pdf',mime:'application/pdf',data:broken.toString('base64'),sha256:Buffer.from(await crypto.subtle.digest('SHA-256',broken)).toString('hex')};
-  x=await identityCall({page,requestId:'identity-broken'});assert.equal(x.data.code,'IDENTITY_PDF');assert.equal(x.calls.length,0);
+  const x=await identityCall({page,requestId:'identity-broken'});assert.equal(x.data.code,'FILE_TYPE');assert.equal(x.calls.length,0);
 });
 test('identity rejects missing cover, another page, extra documents and non-image text',async()=>{
   for(const change of [b=>delete b.page,b=>b.page=null,b=>b.page.page_id='P2',b=>b.pages=[b.page],b=>b.pack=fixturePack(),b=>b.page.student_id='001234',b=>b.page.mime='text/plain']){

@@ -1,5 +1,6 @@
 # Dependencies
 /node_modules/
+/public/pdfjs/
 /.pnp
 .pnp.*
 # Keep authored Yarn tooling if the project adopts Yarn.
@@ -39,7 +40,9 @@ yarn-error.log*
 /.agents/
 /.codex/
 /outputs/
+/output/
 /work/
+/tmp/
 
 # OS metadata
 .DS_Store
