@@ -6,14 +6,14 @@ const fixtureResult=()=>({question_id:'Q1',status:'scored',criteria:[{criterion_
 
 const KEY='test-placeholder-key-no-live-call';
 async function file(){const bytes=Uint8Array.from([137,80,78,71,13,10,26,10]);const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');return {name:'private-student-name.png',mime:'image/png',data:btoa(String.fromCharCode(...bytes)),sha256};}
-async function body(){return {pack:fixturePack(),questionId:'Q1',pages:[{page_id:'P1',...await file()}],lane:'A',requestId:'request-001'};}
+async function body(){return {pack:fixturePack(),questionId:'Q1',pages:[{page_id:'P1',...await file()}],requestId:'request-001'};}
 function request(data,headers={},url='https://grading.example/api/grade'){return new Request(url,{method:'POST',headers:{origin:new URL(url).origin,'content-type':'application/json','x-api-key':KEY,...headers},body:JSON.stringify(data)});}
 const envelope=(value=fixtureResult(),extra={})=>({id:'resp-synthetic',model:'gpt-6.1-terra',status:'completed',usage:{input_tokens:1000,output_tokens:200},output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(value)}]}],...extra});
 const response=(value,status=200,headers={})=>new Response(JSON.stringify(value),{status,headers});
 async function call(data,apiResponse=envelope(),status=200){let calls=[];const r=await handleAPI(request(data),'grade',async(url,opts)=>{calls.push({url,opts});return response(apiResponse,status,{'x-request-id':'provider-id'});});return {r,data:await r.json(),calls};}
 
 test('valid grade request uses independent scoped context and no tools/state',async()=>{const b=await body();const x=await call(b);assert.equal(x.r.status,200);assert.equal(x.calls.length,1);const {url,opts}=x.calls[0];assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'error');assert.equal(opts.headers.authorization,`Bearer ${KEY}`);const sent=JSON.parse(opts.body);assert.equal(sent.store,false);assert.equal(sent.model,API_SETTINGS.model);assert.equal(sent.tools,undefined);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.text.format.strict,true);assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'provider-id');assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');});
-test('second lane never receives first lane response',async()=>{const b=await body();b.lane='B';const x=await call(b);assert.ok(!x.calls[0].opts.body.includes('method observed'));});
+test('unknown grading routing field is rejected before any API call',async()=>{const b=await body();b.lane='obsolete';const x=await call(b);assert.equal(x.r.status,422);assert.equal(x.data.code,'VALIDATION');assert.equal(x.calls.length,0);});
 test('foreign origin blocked before external fetch',async()=>{let n=0;const r=await handleAPI(request(await body(),{origin:'https://evil.example'}),'grade',()=>{n++;});assert.equal(r.status,403);assert.equal(n,0);});
 test('missing key and unsupported method do not send',async()=>{for(const req of [request(await body(),{'x-api-key':''}),new Request('https://grading.example/api/grade')]){let n=0;const r=await handleAPI(req,'grade',()=>{n++;});assert.ok(r.status>=400);assert.equal(n,0);}});
 test('demo pack and extra secret field never reach external API',async()=>{for(const change of [b=>b.pack.demo=true,b=>b.apiKey='forbidden']){const b=await body();change(b);const x=await call(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);}});
@@ -42,16 +42,24 @@ test('single file and combined decoded byte caps reject before upstream send',as
   b=await body();const page=b.pages[0];b.pages=[1,2,3].map(i=>({...page,page_id:'P'+i,data:'A'.repeat(4*Math.ceil((2*1024*1024+1)/3))}));
   x=await call(b);assert.equal(x.data.code,'FILES_TOO_LARGE');assert.equal(x.calls.length,0);
 });
-test('per-instance in-flight cap rejects third request without reading or charging it and releases slots',async()=>{
+test('four requests run concurrently while a fifth is rejected without an upstream charge',async()=>{
   let sendCount=0,release;const gate=new Promise(resolve=>{release=resolve;});
   let ready;const started=new Promise(resolve=>{ready=resolve;});
-  const transport=async()=>{sendCount++;if(sendCount===2)ready();await gate;return response(envelope());};
-  const first=handleAPI(request(await body()),'grade',transport);
-  const second=handleAPI(request(await body()),'grade',transport);
+  const transport=async()=>{sendCount++;if(sendCount===4)ready();await gate;return response(envelope());};
+  const requests=[];for(let i=0;i<4;i++){const b=await body();b.requestId='concurrent-'+i;requests.push(handleAPI(request(b),'grade',transport));}
   await started;
   const busy=await handleAPI(request(await body()),'grade',transport);const data=await busy.json();
-  assert.equal(busy.status,429);assert.equal(data.code,'SERVER_BUSY');assert.equal(data.uncertain,false);assert.equal(data.estimatedCny,0);assert.equal(sendCount,2);
-  release();assert.deepEqual((await Promise.all([first,second])).map(r=>r.status),[200,200]);
+  assert.equal(busy.status,429);assert.equal(data.code,'SERVER_BUSY');assert.equal(data.uncertain,false);assert.equal(data.estimatedCny,0);assert.equal(sendCount,4);
+  release();assert.deepEqual((await Promise.all(requests)).map(r=>r.status),[200,200,200,200]);
+  assert.equal((await call(await body())).r.status,200);
+});
+test('failed requests release all four server slots without retaining request state',async()=>{
+  let ready;const started=new Promise(resolve=>{ready=resolve;});let rejectRequests;const gate=new Promise((_resolve,reject)=>{rejectRequests=reject;});let calls=0;
+  const transport=async()=>{calls++;if(calls===4)ready();return gate;};
+  const requests=[];for(let i=0;i<4;i++){const b=await body();b.requestId='failure-'+i;requests.push(handleAPI(request(b),'grade',transport));}
+  await started;rejectRequests(Error('simulated network failure'));
+  const results=await Promise.all(requests.map(async r=>(await r).json()));
+  assert.ok(results.every(r=>r.uncertain===true&&r.code==='NETWORK'));assert.equal(calls,4);
   assert.equal((await call(await body())).r.status,200);
 });
 test('caller-provided provider URL cannot redirect keys to another host',async()=>{
