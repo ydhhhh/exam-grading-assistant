@@ -213,3 +213,142 @@ test('preparation recovery rejects malformed policy metadata and preapproved or 
   const latest=preparationDraft();mutate(latest);assert.equal(restorePreparationDraft([latest]),null);
  }
 });
+
+// Full student PDFs use a separate identity ledger and immutable document IDs.
+import {PDFDocument,StandardFonts} from 'pdf-lib';
+import {createStudentPDFJob,studentDisplay,documentForTask,taskAdvice,resolveStudentIdentity,retryStudentIdentity,refreshIdentityMappings,studentPDFDemoJob} from '../lib/grading/browser-workflow.mjs';
+async function studentPDF(name='0012345678.pdf',count=3,tag='sample'){
+ const pdf=await PDFDocument.create();pdf.setCreationDate(new Date('2000-01-01T00:00:00Z'));pdf.setModificationDate(new Date('2000-01-01T00:00:00Z'));const font=await pdf.embedFont(StandardFonts.Helvetica);
+ for(let i=0;i<count;i++){const p=pdf.addPage([595,842]);p.drawText((i===0?'PRIVATE IDENTITY ':'ANSWER Q'+i+' ')+tag,{x:30,y:700,size:20,font});}
+ return new File([await pdf.save({useObjectStreams:false})],name,{type:'application/pdf'});
+}
+const identity=(id='0012345678',name='测试甲')=>({name,student_id:id,name_status:name===null?'unreadable':'readable',student_id_status:id===null?'unreadable':'readable',warnings:[]});
+function pdfResponder(identities){let i=0;return async(url,options)=>{if(url==='/api/identity')return asResponse({identity:identities[i++],estimatedCny:.01});return asResponse(response(JSON.parse(options.body).questionId));};}
+
+test('student PDF maps only answer pages to tasks and identity before all grades',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()]);const doc=job.documents[0];
+ assert.equal(job.inputMode,'student_pdf');assert.equal(doc.pageCount,3);assert.equal(doc.cover.sourcePage,1);assert.equal(job.tasks[0].pages[0].sourcePage,2);assert.equal(job.tasks[1].pages[0].sourcePage,3);
+ let calls=[];await runJob(job,runnerOptions(async(url,options)=>{
+  calls.push(url);const body=JSON.parse(options.body);
+  if(url==='/api/identity'){assert.equal(body.page.sha256,doc.cover.sha256);assert.equal(body.page.name,'identity-page.pdf');assert.equal(stored.at(-1).documents[0].attempts[0].state,'in_flight');return asResponse({identity:identity(),estimatedCny:.01});}
+  assert.ok(body.pages.every(p=>p.sha256!==doc.cover.sha256));assert.ok(!options.body.includes('0012345678'));assert.ok(!options.body.includes('测试甲'));return asResponse(response(body.questionId));
+ }));
+ assert.deepEqual(calls,['/api/identity','/api/grade','/api/grade','/api/grade','/api/grade']);assert.equal(job.spentCny,.05);assert.equal(job.heldCny,0);assert.equal(doc.studentId,'0012345678');assert.equal(doc.name,'测试甲');assert.equal(taskAdvice(job,job.tasks[0]).total,3);
+ assert.match(exportCSV(job),/姓名/);assert.match(exportCSV(job),/测试甲/);assert.match(exportCSV(job),/0012345678/);
+});
+
+test('all covers are identified before answers so duplicate IDs block both documents',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF('scan-a.pdf',3,'a'),await studentPDF('scan-b.pdf',3,'b')]);let grades=0;
+ await runJob(job,runnerOptions(async(url,options)=>{if(url==='/api/identity')return asResponse({identity:identity(),estimatedCny:.01});grades++;return asResponse(response(JSON.parse(options.body).questionId));}));
+ assert.equal(grades,0);assert.ok(job.documents.every(d=>d.mappingStatus==='duplicate'));assert.ok(job.tasks.every(t=>taskAdvice(job,t).total===null));assert.match(exportCSV(job),/学号重复/);
+ resolveStudentIdentity(job,job.documents[1].id,{studentId:'0012345679',name:'测试乙'});assert.ok(job.documents.every(d=>d.mappingStatus==='ready'));
+ const resumed=await runJob(job,runnerOptions(pdfResponder([])));assert.equal(resumed.requests,8);assert.equal(job.documents[1].identityHistory.length,1);
+});
+
+test('filename omission uses readable cover ID; unreadable name stays blank without blocking',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF('scan.pdf')]);await runJob(job,runnerOptions(pdfResponder([identity('00001234',null)])));
+ const display=studentDisplay(job,job.tasks[0]);assert.equal(display.studentId,'00001234');assert.equal(display.name,'');assert.equal(display.status,'ready');assert.equal(taskAdvice(job,job.tasks[0]).total,3);assert.match(exportCSV(job),/姓名未能辨认/);
+});
+
+test('filename and recognized ID disagreement blocks scores until explicit identity correction',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()]);let grade=0;await runJob(job,runnerOptions(async(url)=>{if(url!=='/api/identity')grade++;return asResponse({identity:identity('0012345679'),estimatedCny:.01});}));
+ assert.equal(grade,0);assert.equal(job.documents[0].mappingStatus,'conflict');assert.equal(taskAdvice(job,job.tasks[0]).total,null);
+ resolveStudentIdentity(job,job.documents[0].id,{studentId:'0012345679',name:'核对姓名'});assert.equal(job.documents[0].mappingStatus,'ready');assert.equal(studentDisplay(job,job.tasks[0]).name,'核对姓名');
+ assert.throws(()=>resolveStudentIdentity(job,job.documents[0].id,{studentId:'1E10',name:''}),/身份/);
+});
+
+test('unreadable cover ID falls back to numeric filename; both missing require manual identity',async()=>{
+ const files=[await studentPDF(),await studentPDF('scan.pdf',3,'b')];const job=await createStudentPDFJob(pack(),files);await runJob(job,runnerOptions(pdfResponder([identity(null),identity(null)])));
+ assert.equal(job.documents[0].mappingStatus,'ready');assert.equal(job.documents[1].mappingStatus,'missing_id');assert.equal(job.tasks.filter(t=>t.results.A).length,2);
+});
+
+test('wrong page count is isolated and an absent roster student is retained in export',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF('0012345678.pdf',2),await studentPDF('0012345679.pdf',3,'valid')],{},['0012345678','0012345679','0012345680']);
+ await runJob(job,runnerOptions(pdfResponder([identity('0012345679')])));
+ assert.ok(job.documents[0].inputError);assert.equal(job.tasks[0].pages.length,0);assert.equal(job.tasks[0].results.A,null);assert.equal(job.tasks[2].results.A.question_id,'Q1');assert.match(exportCSV(job),/0012345680/);assert.match(exportCSV(job),/未收到PDF/);
+});
+
+test('PDF identity ledger survives uncertain network response and never retries implicitly',async()=>{
+ const originals=[await studentPDF()];const job=await createStudentPDFJob(pack(),originals);let calls=0;let out=await runJob(job,runnerOptions(async()=>{calls++;throw Error('lost');}));
+ assert.equal(out.paused,true);assert.equal(calls,1);assert.equal(job.heldCny,5);assert.equal(job.documents[0].identityState,'uncertain');assert.ok(job.tasks.every(t=>!t.attempts.length));
+ const restored=await importBackup(snapshotJob(job));await rebindJob(restored,originals);assert.equal(restored.documents[0].cover.file.size,job.documents[0].cover.size);
+ out=await runJob(restored,runnerOptions(async()=>{calls++;}));assert.equal(out.requests,0);assert.equal(calls,1);
+ assert.throws(()=>retryStudentIdentity(restored,restored.documents[0].id),/再次计费/);retryStudentIdentity(restored,restored.documents[0].id,true);
+ await runJob(restored,runnerOptions(pdfResponder([identity()])));assert.equal(restored.heldCny,5);assert.equal(restored.spentCny,.05);assert.equal(restored.documents[0].attempts.length,2);
+});
+
+test('saved identity response is recovered after interruption without another identity request',async()=>{
+ const originals=[await studentPDF()];const job=await createStudentPDFJob(pack(),originals);let durable;
+ await assert.rejects(()=>runJob(job,runnerOptions(pdfResponder([identity()]),{persist:async j=>{durable=snapshotJob(j);if(j.documents[0].attempts[0]?.state==='response_saved')throw Error('save interrupted');}})),/interrupted/);
+ const restored=await importBackup(durable);await rebindJob(restored,originals);let ids=0;
+ await runJob(restored,runnerOptions(async(url,options)=>{if(url==='/api/identity')ids++;return asResponse(response(JSON.parse(options.body).questionId));}));
+ assert.equal(ids,0);assert.equal(restored.documents[0].identityState,'done');assert.equal(restored.documents[0].name,'测试甲');assert.equal(restored.spentCny,.05);
+});
+
+test('PDF snapshots omit original and lazy pages, preserve names and reject mismatched mapping or ledger',async()=>{
+ const original=await studentPDF();const job=await createStudentPDFJob(pack(),[original]);await runJob(job,runnerOptions(pdfResponder([identity()])));job.apiKey='secret-raw-key';
+ const snapshot=snapshotJob(job);assert.equal(snapshot.formatVersion,2);assert.equal(snapshot.documents[0].file,undefined);assert.equal(snapshot.documents[0].cover.file,undefined);assert.equal(snapshot.documents[0].answerPages[0].file,undefined);assert.ok(!JSON.stringify(snapshot).includes('secret-raw-key'));
+ const restored=await importBackup(snapshot);assert.equal(restored.documents[0].name,'测试甲');assert.equal(restored.documents[0].cover.file,undefined);
+ assert.throws(()=>resolveStudentIdentity(restored,restored.documents[0].id,{studentId:'123',name:''}),/原PDF/);
+ for(const mutate of [x=>x.tasks[0].pages[0].sourcePage=1,x=>x.documents[0].cover.sourcePage=2,x=>x.spentCny=0,x=>x.documents[0].identityResult.student_id='bad',x=>x.documents[0].answerPages.pop(),x=>x.documents[0].id='different',x=>x.documents[0].filenameStudentId='7777',x=>x.documents[0].cover.path='other/page-001.pdf',x=>x.documents[0].identityResult.name='changed',x=>{x.documents[0].attempts[0].costCny=.02;x.spentCny+=.01;}]){const bad=structuredClone(snapshot);mutate(bad);await assert.rejects(()=>importBackup(bad));}
+ const changedPDF=await studentPDF('0012345678.pdf',3,'changed');await assert.rejects(()=>rebindJob(restored,[changedPDF]),/改变/);
+});
+
+test('PDF stale tab restores identity and file handles without duplicate charges',async()=>{
+ const originals=[await studentPDF()],first=await createStudentPDFJob(pack(),originals),second=await importBackup(snapshotJob(first));await rebindJob(second,originals);
+ await runJob(first,runnerOptions(pdfResponder([identity()])));let calls=0;
+ await runJob(second,runnerOptions(async()=>{calls++;},{load:async()=>importBackup(snapshotJob(first))}));assert.equal(calls,0);assert.equal(studentDisplay(second,second.tasks[0]).name,'测试甲');assert.ok(second.documents[0].cover.file);
+});
+
+test('identity budget and storage failures prevent a first network call',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()],{budgetCny:5,requestReserveCny:5});job.heldCny=5;let calls=0;
+ await assert.rejects(()=>runJob(job,runnerOptions(async()=>{calls++;})),/预算/);assert.equal(calls,0);
+ const fresh=await createStudentPDFJob(pack(),[await studentPDF()]);await assert.rejects(()=>runJob(fresh,runnerOptions(async()=>{calls++;},{persist:async()=>{throw Error('storage full');}})),/storage/);assert.equal(calls,0);
+});
+
+test('out-of-roster identification cannot expose an accepted score',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()],{},['999999']);await runJob(job,runnerOptions(pdfResponder([identity()])));assert.equal(job.documents[0].mappingStatus,'roster_mismatch');assert.equal(taskAdvice(job,job.tasks[0]).total,null);assert.match(exportCSV(job),/名单外学号/);
+});
+
+test('full PDF demo uses synthetic identities with no network and deterministic rebind',async()=>{
+ const job=await studentPDFDemoJob();let calls=0;await runJob(job,runnerOptions(async()=>{calls++;throw Error('must not call');}));assert.equal(calls,0);assert.equal(job.spentCny,0);assert.equal(job.documents[0].name,'演示甲');assert.ok(job.tasks.every(t=>t.results.A&&t.results.B));
+ const restored=await importBackup(snapshotJob(job)),fresh=await studentPDFDemoJob();await rebindJob(restored,fresh.documents.map(d=>d.file));assert.ok(restored.documents[0].cover.file);assert.match(exportCSV(restored),/演示甲/);
+});
+
+
+test('PDF mode refuses reordered questions and invalid roster before reading originals',async()=>{
+ const altered=pack();altered.questions.reverse();let reads=0;const original={name:'123.pdf',size:100,arrayBuffer:async()=>{reads++;throw Error('should not read');}};
+ await assert.rejects(()=>createStudentPDFJob(altered,[original]),/顺序/);
+ await assert.rejects(()=>createStudentPDFJob(pack(),[original],{},['123','123']),/不重复/);assert.equal(reads,0);
+});
+
+test('identity invalid JSON shape retains reserve and pauses before scoring',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()]);let calls=0;
+ const result=await runJob(job,runnerOptions(async()=>{calls++;return asResponse(null);}));assert.equal(calls,1);assert.equal(result.paused,true);assert.equal(job.heldCny,5);assert.equal(job.documents[0].identityState,'uncertain');assert.ok(job.tasks.every(t=>!t.attempts.length));
+ const restored=await importBackup(snapshotJob(job));assert.equal(restored.documents[0].identityState,'uncertain');
+});
+
+test('identity quota errors pause and require explicit retry without reserving an unused fee',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()]);let calls=0;
+ const result=await runJob(job,runnerOptions(async()=>{calls++;return asResponse({error:'slow down',code:'RATE_LIMIT',uncertain:false},429);}));assert.equal(result.paused,true);assert.equal(job.heldCny,0);assert.equal(job.documents[0].identityState,'error');
+ await runJob(job,runnerOptions(async()=>{calls++;}));assert.equal(calls,1);retryStudentIdentity(job,job.documents[0].id);await runJob(job,runnerOptions(pdfResponder([identity()])));assert.equal(job.spentCny,.05);
+});
+
+test('identity edits after grading preserve document-bound scores and block any new duplicate association',async()=>{
+ const originals=[await studentPDF('0012345678.pdf',3,'first'),await studentPDF('0012345679.pdf',3,'second')];
+ const job=await createStudentPDFJob(pack(),originals);await runJob(job,runnerOptions(pdfResponder([identity(),identity('0012345679','测试乙')])));
+ const ids=job.tasks.map(t=>t.id),rawResults=JSON.stringify(job.tasks.map(t=>t.results)),rawIdentities=JSON.stringify(job.documents.map(d=>d.identityResult));
+ resolveStudentIdentity(job,job.documents[0].id,{studentId:'0012345678',name:'更正姓名'});assert.equal(taskAdvice(job,job.tasks[0]).total,3);assert.match(exportCSV(job),/更正姓名/);
+ resolveStudentIdentity(job,job.documents[1].id,{studentId:'0012345678',name:''});assert.ok(job.tasks.every(t=>taskAdvice(job,t).total===null));assert.ok(job.documents.every(d=>d.mappingStatus==='duplicate'));
+ const restored=await importBackup(snapshotJob(job));assert.deepEqual(restored.tasks.map(t=>t.id),ids);assert.equal(JSON.stringify(restored.tasks.map(t=>t.results)),rawResults);assert.equal(JSON.stringify(restored.documents.map(d=>d.identityResult)),rawIdentities);
+ await rebindJob(restored,originals);resolveStudentIdentity(restored,restored.documents[1].id,{studentId:'0012345679',name:''});assert.ok(restored.tasks.every(t=>taskAdvice(restored,t).total===3));let calls=0;
+ await runJob(restored,runnerOptions(async()=>{calls++;throw Error('completed grading must be reused');}));assert.equal(calls,0);assert.equal(restored.documents[1].identityHistory.length,2);assert.equal(restored.documents[1].name,null);
+});
+
+
+test('name-unreadable notice appears only after identity completion, never before an attempted reading',async()=>{
+ const job=await createStudentPDFJob(pack(),[await studentPDF()]),doc=job.documents[0];
+ for(const state of ['pending','running','error','uncertain']){doc.identityState=state;refreshIdentityMappings(job);assert.ok(!doc.identityWarnings.some(w=>/姓名未能辨认|姓名未填写/.test(w)));}
+ doc.identityState='done';doc.identityResult=identity('0012345678',null);refreshIdentityMappings(job);assert.ok(doc.identityWarnings.some(w=>/姓名未能辨认/.test(w)));
+ resolveStudentIdentity(job,doc.id,{studentId:'0012345678',name:''});assert.ok(doc.identityWarnings.some(w=>/姓名未填写/.test(w)));assert.ok(!doc.identityWarnings.some(w=>/姓名未能辨认/.test(w)));
+});

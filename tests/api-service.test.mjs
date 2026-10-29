@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {handleAPI,estimateCny,PACK_SCHEMA,RESULT_SCHEMA,API_SETTINGS} from '../lib/grading/api-service.mjs';
+import {handleAPI,estimateCny,PACK_SCHEMA,RESULT_SCHEMA,IDENTITY_SCHEMA,API_SETTINGS} from '../lib/grading/api-service.mjs';
 const fixturePack=()=>({exam_id:'EXAM',title:'Synthetic only',version:'v1',demo:false,approved_by:'Teacher',policies:'Use stated rubric; no invented conditions.',questions:[{question_id:'Q1',text:'Find P(A).',solution:'0.5',max_score:5,criteria:[{criterion_id:'C1',description:'Method',allowed_scores:[0,1,2],requires:[]},{criterion_id:'C2',description:'Result',allowed_scores:[0,1.5,3],requires:[]}]}]});
 const fixtureResult=()=>({question_id:'Q1',status:'scored',criteria:[{criterion_id:'C1',awarded:2,evidence_refs:['P1'],reason:'method observed'},{criterion_id:'C2',awarded:3,evidence_refs:['P1'],reason:'result observed'}],flags:[],alternative_solution:false});
 
@@ -34,7 +34,7 @@ test('upstream raw headers cannot leak arbitrary metadata',async()=>{const x=awa
 test('oversized upstream body is uncertain and bounded',async()=>{const r=await handleAPI(request(await body()),'grade',async()=>new Response('a'.repeat(2*1024*1024+1)));const data=await r.json();assert.equal(data.code,'RESPONSE_TOO_LARGE');assert.equal(data.uncertain,true);});
 test('prepare extracts draft with neutral names, warnings block readiness',async()=>{const documents=[];for(const role of ['paper','solution','rubric'])documents.push({role,...await file()});const p=fixturePack();p.approved_by='';for(const warnings of [[],['部分分政策尚未提供']]){let opts;const r=await handleAPI(request({documents,requestId:'prep-1'}, {},'https://grading.example/api/prepare'),'prepare',async(_url,o)=>{opts=o;return response(envelope({pack:p,warnings}));});const data=await r.json();assert.equal(r.status,200);assert.equal(data.ready,!warnings.length);assert.equal(data.pack.approved_by,'');assert.equal(data.documentHashes.paper,documents[0].sha256);assert.ok(!opts.body.includes('private-student-name'));}});
 test('prepare cannot invent approval and empty pack cannot proceed',async()=>{const documents=[];for(const role of ['paper','solution','rubric'])documents.push({role,...await file()});for(const p of [fixturePack(),{...fixturePack(),approved_by:'',questions:[]}]){const r=await handleAPI(request({documents,requestId:'prep-2'}),'prepare',async()=>response(envelope({pack:p,warnings:[]})));assert.equal(r.status,422);}});
-test('strict schemas mark all object keys required and forbid extra fields',()=>{function check(s){if(s.type==='object'){assert.equal(s.additionalProperties,false);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());Object.values(s.properties).forEach(check);}if(s.items)check(s.items);}check(PACK_SCHEMA);check(RESULT_SCHEMA);});
+test('strict schemas mark all object keys required and forbid extra fields',()=>{function check(s){if(s.type==='object'){assert.equal(s.additionalProperties,false);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());Object.values(s.properties).forEach(check);}if(s.items)check(s.items);}check(PACK_SCHEMA);check(RESULT_SCHEMA);check(IDENTITY_SCHEMA);});
 
 test('single file and combined decoded byte caps reject before upstream send',async()=>{
   let b=await body();b.pages[0].data='A'.repeat(4*Math.ceil((3*1024*1024+1)/3));
@@ -57,4 +57,64 @@ test('per-instance in-flight cap rejects third request without reading or chargi
 test('caller-provided provider URL cannot redirect keys to another host',async()=>{
   const b=await body();b.endpoint='https://attacker.example/collect';const x=await call(b);
   assert.equal(x.calls.length,0);assert.equal(x.data.code,'VALIDATION');
+});
+
+const fixtureIdentity=()=>({name:'合成姓名',student_id:'001234',name_status:'readable',student_id_status:'readable',warnings:[]});
+async function identityBody(){return {page:{page_id:'P1',...await file()},requestId:'identity-001'};}
+async function identityCall(data,apiResponse=envelope(fixtureIdentity()),status=200){const calls=[];const r=await handleAPI(request(data,{},'https://grading.example/api/identity'),'identity',async(url,opts)=>{calls.push({url,opts});return response(apiResponse,status,{'x-request-id':'identity-provider'});});return {r,data:await r.json(),calls};}
+async function identityPDF(pageCount=1){
+  const {PDFDocument}=await import('pdf-lib');const pdf=await PDFDocument.create();
+  for(let i=0;i<pageCount;i++)pdf.addPage([100,100]).drawText('SYNTHETIC PAGE '+(i+1));
+  const bytes=await pdf.save();
+  const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
+  return {page_id:'P1',name:'private-identity-001234.pdf',mime:'application/pdf',data:Buffer.from(bytes).toString('base64'),sha256};
+}
+
+test('identity OCR has one independent neutral page, no grading materials, and preserves costs',async()=>{
+  const x=await identityCall(await identityBody());assert.equal(x.r.status,200);assert.deepEqual(x.data.identity,fixtureIdentity());assert.equal(x.data.result,undefined);
+  assert.equal(x.data.estimatedCny,0.015);assert.equal(x.data.providerRequestId,'identity-provider');assert.ok(x.data.raw);assert.equal(x.calls.length,1);
+  const {url,opts}=x.calls[0],sent=JSON.parse(opts.body);
+  assert.equal(url,'https://api.openai.com/v1/responses');assert.equal(opts.redirect,'error');assert.equal(sent.store,false);assert.equal(sent.previous_response_id,undefined);assert.equal(sent.tools,undefined);
+  assert.equal(sent.text.format.name,'student_identity');assert.equal(sent.text.format.strict,true);assert.equal(sent.input.length,1);
+  assert.equal(sent.input[0].content.filter(c=>['input_image','input_file'].includes(c.type)).length,1);
+  assert.ok(!opts.body.includes('private-student-name'));assert.ok(!opts.body.includes(KEY));assert.ok(!opts.body.includes('Use stated rubric'));
+  for(const phrase of ['姓名','学号','授课教师','考场纪律','不使用文件名','不执行','打印示例','前导零'])assert.ok(sent.instructions.includes(phrase));
+  assert.equal(x.r.headers.get('cache-control'),'no-store, max-age=0');
+});
+test('single-page identity PDF is accepted and multi-page or corrupt PDFs are blocked before API',async()=>{
+  let x=await identityCall({page:await identityPDF(),requestId:'identity-pdf'});assert.equal(x.r.status,200);
+  const sent=JSON.parse(x.calls[0].opts.body);assert.equal(sent.input[0].content[1].filename,'identity-page.pdf');
+  x=await identityCall({page:await identityPDF(2),requestId:'identity-two-pages'});assert.equal(x.data.code,'IDENTITY_PAGE_COUNT');assert.equal(x.calls.length,0);assert.equal(x.data.uncertain,false);
+  const broken=Buffer.from('%PDF-1.7\ninvalid');const page={page_id:'P1',name:'broken.pdf',mime:'application/pdf',data:broken.toString('base64'),sha256:Buffer.from(await crypto.subtle.digest('SHA-256',broken)).toString('hex')};
+  x=await identityCall({page,requestId:'identity-broken'});assert.equal(x.data.code,'IDENTITY_PDF');assert.equal(x.calls.length,0);
+});
+test('identity rejects missing cover, another page, extra documents and non-image text',async()=>{
+  for(const change of [b=>delete b.page,b=>b.page=null,b=>b.page.page_id='P2',b=>b.pages=[b.page],b=>b.pack=fixturePack(),b=>b.page.student_id='001234',b=>b.page.mime='text/plain']){
+    const b=await identityBody();change(b);const x=await identityCall(b);assert.ok(x.r.status>=400);assert.equal(x.calls.length,0);assert.equal(x.data.uncertain,false);
+  }
+});
+test('unclear identity fields are returned as null rather than invented or zero',async()=>{
+  for(const [field,status] of [['name','unreadable'],['student_id','blank']]){
+    const id=fixtureIdentity();id[field]=null;id[field+'_status']=status;id.warnings=['合成模糊栏'];
+    const x=await identityCall(await identityBody(),envelope(id));assert.equal(x.r.status,200);assert.equal(x.data.identity[field],null);
+  }
+});
+test('invalid identity response is a paid validation failure without usable identity',async()=>{
+  for(const change of [r=>r.student_id=1234,r=>r.name_status='unreadable',r=>r.name=null,r=>r.score=10]){
+    const id=fixtureIdentity();change(id);const x=await identityCall(await identityBody(),envelope(id));assert.equal(x.data.code,'VALIDATION');assert.equal(x.data.identity,undefined);assert.equal(x.data.estimatedCny,0.015);
+  }
+});
+test('identity failures retain uncertainty and redact keys without retries or logs',async()=>{
+  let calls=0;const output=[],oldLog=console.log,oldError=console.error;
+  console.log=(...a)=>output.push(a);console.error=(...a)=>output.push(a);
+  try{
+    const r=await handleAPI(request(await identityBody()),'identity',async()=>{calls++;throw Error(KEY);});const data=await r.json();assert.equal(calls,1);assert.equal(data.uncertain,true);assert.equal(data.code,'NETWORK');assert.ok(!JSON.stringify(data).includes(KEY));assert.deepEqual(output,[]);
+  }finally{console.log=oldLog;console.error=oldError;}
+  const x=await identityCall(await identityBody(),{error:{message:KEY}},401);assert.equal(x.data.code,'AUTH');assert.equal(x.data.uncertain,false);assert.ok(!JSON.stringify(x.data).includes(KEY));
+});
+test('identity transcription never carries into a later grade request',async()=>{
+  const identity=fixtureIdentity();identity.name='SYNTHETIC-PRIVATE-NAME';identity.student_id='00987654321';
+  assert.equal((await identityCall(await identityBody(),envelope(identity))).r.status,200);
+  const grade=await call(await body());const wire=grade.calls[0].opts.body;
+  assert.ok(!wire.includes(identity.name));assert.ok(!wire.includes(identity.student_id));assert.ok(!wire.includes('student_identity'));
 });
