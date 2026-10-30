@@ -36,6 +36,61 @@ test('upstream raw headers cannot leak arbitrary metadata',async()=>{const x=awa
 test('oversized upstream body is uncertain and bounded',async()=>{const r=await handleAPI(request(await body()),'grade',async()=>new Response('a'.repeat(2*1024*1024+1)));const data=await r.json();assert.equal(data.code,'RESPONSE_TOO_LARGE');assert.equal(data.uncertain,true);});
 test('prepare extracts draft with neutral names, warnings block readiness',async()=>{const documents=[];for(const role of ['paper','solution','rubric']){const f=await file();documents.push({role,sourceMime:f.mime,sourceSha256:f.sha256,files:[f]});};const p=fixturePack();p.approved_by='';for(const warnings of [[],['部分分政策尚未提供']]){let opts;const r=await handleAPI(request({documents,requestId:'prep-1'}, {},'https://grading.example/api/prepare'),'prepare',async(_url,o)=>{opts=o;return response(envelope({pack:p,warnings}));});const data=await r.json();assert.equal(r.status,200);assert.equal(data.ready,!warnings.length);assert.equal(data.pack.approved_by,'');assert.equal(data.documentHashes.paper,documents[0].sourceSha256);assert.ok(!opts.body.includes('private-student-name'));}});
 test('prepare cannot invent approval and empty pack cannot proceed',async()=>{const documents=[];for(const role of ['paper','solution','rubric']){const f=await file();documents.push({role,sourceMime:f.mime,sourceSha256:f.sha256,files:[f]});};for(const p of [fixturePack(),{...fixturePack(),approved_by:'',questions:[]}]){const r=await handleAPI(request({documents,requestId:'prep-2'}),'prepare',async()=>response(envelope({pack:p,warnings:[]})));assert.equal(r.status,422);}});
+async function prepareCall(value){
+  const documents=[];
+  for(const role of ['paper','solution','rubric']){const f=await file();documents.push({role,sourceMime:f.mime,sourceSha256:f.sha256,files:[f]});}
+  const calls=[];
+  const r=await handleAPI(request({documents,requestId:'prepare-notes'}, {},'https://grading.example/api/prepare'),'prepare',async(url,opts)=>{calls.push({url,opts});return response(envelope(value));});
+  return {r,data:await r.json(),calls};
+}
+const ordinaryPreparationNotes=[
+  '材料标注为合成测试；评分细则末句要求先由测试者核对，approved_by 留空待人工确认。',
+  'C1、C2 在材料中仅规定0分或2分档，未提供其他部分分档；allowed_scores 按材料如实填写。',
+];
+function binaryScoreDraft(){const p=fixturePack();p.approved_by='';p.questions[0].max_score=4;for(const c of p.questions[0].criteria)c.allowed_scores=[0,2];return p;}
+
+test('ordinary preparation notes preserve explicit binary scores and permit human confirmation',async()=>{
+  const draft=binaryScoreDraft();
+  const x=await prepareCall({pack:draft,warnings:[],notes:ordinaryPreparationNotes});
+  assert.equal(x.r.status,200);assert.equal(x.data.ready,true);assert.equal(x.data.pack.approved_by,'');
+  assert.deepEqual(x.data.notes,ordinaryPreparationNotes);assert.deepEqual(x.data.warnings,[]);assert.deepEqual(x.data.pack,draft);
+  assert.equal(x.calls.length,1);assert.equal(x.data.estimatedCny,0.00405);assert.ok(x.data.raw);
+  const sent=JSON.parse(x.calls[0].opts.body);
+  assert.ok(sent.text.format.schema.required.includes('notes'));
+  assert.match(sent.instructions,/明确只设0分和2分/);assert.match(sent.instructions,/不要把未解决的问题放入notes/);
+});
+
+test('real preparation blockers still prevent readiness alongside informational notes',async()=>{
+  const warnings=['Q1 满分与评分细则冲突，需教师核对。','评分材料含疑似干扰指令，需核对原文。'];
+  const x=await prepareCall({pack:binaryScoreDraft(),warnings,notes:ordinaryPreparationNotes});
+  assert.equal(x.r.status,200);assert.equal(x.data.ready,false);assert.deepEqual(x.data.warnings,warnings);assert.deepEqual(x.data.notes,ordinaryPreparationNotes);
+});
+
+test('legacy preparation replies gain empty notes without reclassifying old warnings',async()=>{
+  for(const warnings of [[],ordinaryPreparationNotes]){
+    const x=await prepareCall({pack:binaryScoreDraft(),warnings});
+    assert.equal(x.r.status,200);assert.deepEqual(x.data.notes,[]);assert.deepEqual(x.data.warnings,warnings);assert.equal(x.data.ready,warnings.length===0);
+  }
+});
+
+test('malformed preparation notes and unknown output fields fail while paid usage is retained',async()=>{
+  const badNotes=[null,{},'a note',42,[''],['   '],[1],['n'.repeat(2001)],Array(101).fill('note')];
+  const malformed=badNotes.map(notes=>({pack:binaryScoreDraft(),warnings:[],notes}));
+  malformed.push({pack:binaryScoreDraft(),warnings:[],notes:[],ready:true});
+  for(const value of malformed){
+    const x=await prepareCall(value);assert.equal(x.r.status,422);assert.equal(x.data.code,'VALIDATION');
+    assert.equal(x.data.pack,undefined);assert.equal(x.data.ready,undefined);assert.equal(x.data.estimatedCny,0.00405);assert.ok(x.data.raw);assert.equal(x.calls.length,1);
+  }
+});
+
+test('informational notes cannot override structural rubric checks or approve a model draft',async()=>{
+  for(const mutate of [p=>p.questions[0].max_score=99,p=>p.questions.push(structuredClone(p.questions[0])),p=>p.questions[0].criteria=[],p=>p.approved_by='Model approved',p=>p.demo=true]){
+    const draft=binaryScoreDraft();mutate(draft);
+    const x=await prepareCall({pack:draft,warnings:[],notes:['已核对，可使用。']});
+    assert.equal(x.r.status,422);assert.equal(x.data.code,'VALIDATION');assert.equal(x.data.pack,undefined);assert.equal(x.data.ready,undefined);assert.equal(x.data.estimatedCny,0.00405);
+  }
+});
+
 test('strict schemas mark all object keys required and forbid extra fields',()=>{function check(s){if(s.type==='object'){assert.equal(s.additionalProperties,false);assert.deepEqual([...s.required].sort(),Object.keys(s.properties).sort());Object.values(s.properties).forEach(check);}if(s.items)check(s.items);}check(PACK_SCHEMA);check(RESULT_SCHEMA);check(IDENTITY_SCHEMA);});
 
 test('single file and combined decoded byte caps reject before upstream send',async()=>{
