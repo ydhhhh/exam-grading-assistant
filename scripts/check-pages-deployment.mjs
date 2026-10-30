@@ -25,6 +25,16 @@ function staticLinks(html){
   return [...html.matchAll(/<(?:script|link)\b[^>]*?\b(?:src|href)="([^"]+)"/g)].map(match=>match[1]).filter(value=>!value.startsWith('data:'));
 }
 
+function staticAssetName(link,basePath){
+  assert(link.startsWith(`${basePath}/`)&&!link.startsWith('//'),`Static asset does not use the project base path: ${link}`);
+  const decodedPath=decodeURIComponent(link.split(/[?#]/,1)[0]);
+  assert(!/[\\\u0000-\u001f\u007f]/.test(decodedPath)&&!decodedPath.split('/').some(part=>part==='.'||part==='..'),'Invalid static asset path.');
+  const url=new URL(link,'https://pages.invalid');
+  assert.equal(url.origin,'https://pages.invalid',`External static asset is not allowed: ${link}`);
+  assert(url.pathname.startsWith(`${basePath}/`),`Static asset escaped the project path: ${link}`);
+  return decodeURIComponent(url.pathname.slice(basePath.length+1));
+}
+
 export async function checkPagesArtifact(output=path.join(root,'out'),basePath=process.env.NEXT_PUBLIC_BASE_PATH??'/exam-grading-assistant'){
   const files=await listFiles(output);
   assert(files.includes('index.html'),'Static homepage is missing.');
@@ -43,10 +53,7 @@ export async function checkPagesArtifact(output=path.join(root,'out'),basePath=p
   const links=staticLinks(html);
   assert(links.some(link=>link.includes('/_next/static/')),'Next.js browser assets are missing.');
   for(const link of links){
-    assert(link.startsWith(`${basePath}/`),`Static asset does not use the project base path: ${link}`);
-    const name=decodeURIComponent(new URL(link,'https://pages.invalid').pathname.slice(basePath.length+1));
-    assert(!name.split('/').includes('..'),'Invalid static asset path.');
-    await access(path.join(output,name));
+    await access(path.join(output,staticAssetName(link,basePath)));
   }
   const {version}=JSON.parse(await readFile(path.join(root,'node_modules/pdfjs-dist/package.json'),'utf8'));
   const pdfRoot=`pdfjs/${version}`;
@@ -57,23 +64,37 @@ export async function checkPagesArtifact(output=path.join(root,'out'),basePath=p
     assert(file,`Local PDF assets missing: ${directory}`);pdfSamples.push(`${basePath}/${file}`);
   }
   console.log(`Static artifact OK: ${files.length} files, ${(bytes/1024**2).toFixed(1)} MiB; project assets and local PDF resources exist; no server paths or environment files.`);
-  return {html,links:[...new Set([...links,`${basePath}/${pdfRoot}/pdf.worker.min.mjs`,...pdfSamples])]};
+  const pdfLinks=[`${basePath}/${pdfRoot}/pdf.worker.min.mjs`,...pdfSamples];
+  return {html,pdfLinks,links:[...new Set([...links,...pdfLinks])]};
+}
+
+// A CI build can have different chunk hashes from a local build of the same commit.
+// Read the deployed HTML before checking its assets; only stable PDF samples come from out/.
+export async function checkPagesDeployment(deploymentURL,basePath,pdfLinks=[]){
+  const base=new URL(deploymentURL);
+  assert(['http:','https:'].includes(base.protocol),'Only HTTP(S) deployment URLs are supported.');
+  assert(base.pathname===`${basePath}/`||base.pathname===basePath,'Deployment URL must include the configured project path.');
+  const homepage=await fetch(new URL(`${basePath}/`,base.origin),{signal:AbortSignal.timeout(15000),redirect:'error'});
+  assert.equal(homepage.status,200,`Homepage returned ${homepage.status}`);
+  assert(homepage.headers.get('content-type')?.includes('text/html'),'Homepage did not return HTML.');
+  const html=await homepage.text();
+  const liveLinks=staticLinks(html);
+  assert(liveLinks.some(link=>link.includes('/_next/static/')),'Deployed Next.js browser assets are missing.');
+  const resources=[...new Set([...liveLinks,...pdfLinks])];
+  // Validate the entire list before issuing any asset requests.
+  for(const resource of resources)staticAssetName(resource,basePath);
+  for(const resource of resources){
+    const response=await fetch(new URL(resource,base.origin),{signal:AbortSignal.timeout(15000),redirect:'error'});
+    assert.equal(response.status,200,`${resource} returned ${response.status}`);
+    const body=await response.arrayBuffer();
+    assert(body.byteLength>0,`Empty resource: ${resource}`);
+    assert(!response.headers.get('content-type')?.includes('text/html'),`Asset returned an HTML fallback: ${resource}`);
+  }
+  console.log(`Live static deployment OK: homepage, ${liveLinks.length} deployed browser assets and ${pdfLinks.length} local PDF resources. No model requests were sent.`);
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const basePath=process.env.NEXT_PUBLIC_BASE_PATH??'/exam-grading-assistant';
-  const {links}=await checkPagesArtifact(undefined,basePath);
-  if(process.argv[2]){
-    const base=new URL(process.argv[2]);
-    assert(['http:','https:'].includes(base.protocol),'Only HTTP(S) deployment URLs are supported.');
-    assert(base.pathname===`${basePath}/`||base.pathname===basePath,'Deployment URL must include the configured project path.');
-    for(const resource of [`${basePath}/`,...links]){
-      const response=await fetch(new URL(resource,base.origin),{signal:AbortSignal.timeout(15000),redirect:'error'});
-      assert.equal(response.status,200,`${resource} returned ${response.status}`);
-      const body=await response.arrayBuffer();
-      assert(body.byteLength>0,`Empty resource: ${resource}`);
-      if(resource.includes('/_next/')||resource.includes('/pdfjs/'))assert(!response.headers.get('content-type')?.includes('text/html'),`Asset returned an HTML fallback: ${resource}`);
-    }
-    console.log('Live static deployment OK: homepage, browser assets and local PDF resources. No model requests were sent.');
-  }
+  const {pdfLinks}=await checkPagesArtifact(undefined,basePath);
+  if(process.argv[2])await checkPagesDeployment(process.argv[2],basePath,pdfLinks);
 }
