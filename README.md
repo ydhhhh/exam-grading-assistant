@@ -1,10 +1,10 @@
-# 阅卷助手 · 国内三阶段版
+# 阅卷助手 · 国内版
 
-本目录维护 GitHub 的 `domestic-AI` 分支（Git 分支名不能含空格）。它从标准版 main 的 `e798040` 功能源版本分出，保留 PDF 答卷、逐题建议评分、独立模型复核、人工改分、费用账本、断点恢复及 CSV 导出。**不支持 GPT/OpenAI API**。
+本目录维护 GitHub 的 `domestic-AI` 分支。它保留 PDF 答卷、逐题建议评分、独立模型复核、人工改分、费用账本、断点恢复及 CSV 导出。**不支持 GPT/OpenAI API**。
 
-提供两种部署方式：**GitHub Pages 个人密钥版**与 **Node 服务器版**。Pages 发布入口为 [国内阅卷助手](https://ydhhhh.github.io/exam-grading-assistant/)，由本分支的 Actions 自动构建。**截至 2026-10-30，Pages 已上线；Node 服务器版已在北大 CLab 云主机部署并通过加密管理连接验收，正式校园域名与 HTTPS 尚待办理，因此暂无可分享的服务器版网址。** 当前 CLab 使用各自填写密钥的模式；服务器程序也支持负责人统一保管密钥及访问码登录。两者都不需要 ChatGPT 登录，字体、PDF.js 及转图资源均由本站提供。
+提供两种部署方式：**GitHub Pages 个人密钥版**与 **Node 服务器版**。Pages 发布入口为 [国内阅卷助手](https://ydhhhh.github.io/exam-grading-assistant/)，由本分支的 Actions 自动构建。**目前Pages 已上线；Node 服务器版未来可在北大 CLab 云主机部署并通过加密管理连接验收，正式校园域名与 HTTPS 尚待办理，因此暂无可分享的服务器版网址。** 服务器程序也支持负责人统一保管密钥及访问码登录。两者都不需要 ChatGPT 登录，字体、PDF.js 及转图资源均由本站提供。
 
-GitHub Pages 不提供 Node 后端，个人密钥版在浏览器内验证请求并直连国内模型官方接口，不向 GitHub 上传密钥或答卷。`github.io` 能否在目标校园或运营商网络稳定访问仍须当地实测；发布成功不等于大陆可达性已验收。标准版原网址已更新到 v5，仍作为另一个入口保留。
+GitHub Pages 不提供 Node 后端，个人密钥版在浏览器内验证请求并直连国内模型官方接口，不向 GitHub 上传密钥或答卷。`github.io` 能否在目标校园或运营商网络稳定访问仍须当地实测。
 
 ## 三阶段设置
 
@@ -73,47 +73,9 @@ npm run preview:pages
 
 ## 北大 CLab 部署状态与校园入口
 
-CLab 云主机上运行本项目的 Node 服务，就是服务器版；不需要另写一套判卷程序。已创建 Ubuntu 24.04 云主机（4 核、4 GiB 内存、40 GiB 系统盘，校园共享网络），安装 Node.js 22.23.4，并以独立的低权限账户运行生产构建。[CLab 官方快速上手](https://github.com/pkucnc/clab_docs/blob/main/docs/getting-started/introduction.md)说明了校园网络及网关连接；[运营方说明](https://lcpu.dev/news/xlab-course-nodes/)介绍了长期云主机与课程 xLab 的区别。
+CLab 云主机上运行本项目的 Node 服务，就是服务器版；不需要另写一套判卷程序。Clab 支持创建云主机（4 核、4 GiB 内存、40 GiB 系统盘，校园共享网络），安装 Node.js 22.23.4，并以独立的低权限账户运行生产构建。[CLab 官方快速上手](https://github.com/pkucnc/clab_docs/blob/main/docs/getting-started/introduction.md)说明了校园网络及网关连接；[运营方说明](https://lcpu.dev/news/xlab-course-nodes/)介绍了长期云主机与课程 xLab 的区别。
 
-**已完成**：Linux 服务器上 306 项测试、类型检查和生产构建；服务自动启动配置及服务重启检查；首页、运行配置、同源校验、本站 PDF 资源检查；通过 SSH 加密隧道进行浏览器演示、独立复核分歧及 PDF 原卷预览。尚未重启整台主机验证网关恢复，也未使用真实模型或学生材料。首次部署使用各自填写密钥的模式，服务器没有保存供应商密钥。
-
-**尚未开放校园网页入口**：Node 仅监听 `127.0.0.1:3000`，主机入站防火墙只允许校园管理连接。Nginx 已安装且配置模板通过语法检查，但未启用网页监听，模板中的域名和证书路径不能直接使用。本机 SSH 预览不是可分享给师生的网址。
-
-正式入口拟采用“北大域名 → 学校 HTTPS 代理 → CLab 网页服务”。[北大网络服务 FAQ](https://netportal.pku.edu.cn/faq.jsp)说明申请域名需要办理网站备案，并提供 HTTPS 证书代理服务（咨询电话 62751023）。登录备案系统目前仅用于核对申请条件与必填材料；尚未提交申请。个人 CLab 主机的域名申请资格、所属单位/负责人材料，以及学校代理能否回源此主机仍待确认。应按学校实际批准的域名、回源地址和端口配置，不能把 HTTP 校园 IP 或自签证书当作正式 HTTPS 入口。
-
-2026-10-30 完成网关登录后，从 CLab 主机重新检查官方 HTTPS 接口：Kimi 和 DeepSeek 返回 401（未提供密钥），Qwen 返回 404；Kimi 此前的连接超时已消失。三家 DNS/TLS/HTTP 网络连接已到达，未发送模型推理或付费请求；这不代表账户权限或模型调用成功。全部三家真实 API、校园浏览器及正式 HTTPS 验收通过前，不宣称可投入正式阅卷。
-
-### 校园备案与域名申请准备
-
-2026-10-30 已登录并查看现行[信息资产备案/固定 IP 申请/域名申请表单](https://wsyy.pku.edu.cn/fe/taskCenter/matterApplication?app_id=359)，尚未提交申请。学校[网站备案说明](https://its.pku.edu.cn/portal_5.jsp)称备案面向教职工、全程线上且无需纸质盖章材料；当前账号能打开表单不等于备案资格已经批准。项目尚未确定实际负责的教职工，应先联系任课教师或院系老师。
-
-现行表单已查看“服务器”“申请域名”“是 AI 应用”展开后的字段：
-
-| 类别 | 需要准备的信息 |
-| --- | --- |
-| 单位与人员 | 申请部门、日期；负责人姓名、职工号、办公电话、手机、邮箱；经办人及相应联系方式 |
-| 服务器 | 当前 IP、MAC、名称、设备类别、放置位置；CLab 虚拟主机的机房位置及是否需固定 IP 应向运营方/计算中心确认，不能编造楼号房间 |
-| 域名与网络 | 拟申请 `xxxx.pku.edu.cn` 域名（前缀 4–25 字符）、服务器出站服务范围、网站允许访问范围、开放 TCP 端口、必要备注 |
-| AI 应用 | 应用类型、基座大模型、部署方式、AI 供应商、涉及数据、面向群体；另有 AI 应用备注 |
-
-本项目 AI 部署方式应说明为“云端 API 调用”：网页/轻量后端在 CLab，模型由 Kimi、DeepSeek、Qwen 提供，默认模型与阶段分配见上表。应用类型可建议“其他（AI 辅助阅卷）”，面向校内师生；数据包括课程材料、学生姓名学号、答卷图片及评分结果，不能申报成仅使用公开数据。数据类别和实际使用范围需由项目负责人核定。展开后的表单未显示强制上传附件字段；审批、安全扫描或后续配置仍可能要求补充材料。
-
-**出站服务范围与网站访问范围必须分开确认。** 表单注明申请固定 IP 后不能再登录网关；若出站选择免费“校内”，服务器也不能访问校外模型 API。表单另有 30 元/月，以及 30 元/月加 CERNET 收费地址流量 0.5 元/M 的选项；这些是一般服务器申请表的选项，不能直接断言适用于此 CLab 主机，也不能将它们当作 HTTPS 的收费标准。本次未更改服务范围或启用付费选项。需先确认 CLab 现有地址能否直接备案/绑定域名，以及保留模型 API 出站能力的登记和计费方式。
-
-已查看的流程图包括网络安全联络员、单位负责人、计算中心网络安全室、用户账号管理办公室审批，随后安全扫描与权限开通；这不是提交后立即获得网址的流程。
-
-备案/固定 IP 咨询为 **62753007**（当前表单邮箱 `laiqn@pku.edu.cn`）；学校 HTTPS 证书代理咨询为 **62751023**。HTTPS 代理是否可回源 CLab 私网、所需域名/地址/端口材料、校内访问限制、收费和时限尚待计算中心答复。技术上需支持本项目的原始 Host/HTTPS 来源、至少 10 MiB 请求及 300 秒请求等待；按学校实际代理规范配置，勿直接开放未经验证的 HTTP 回源。此轮未联系学校或提交材料。
-
-### CLab 部署文件与维护
-
-- `deploy/clab/grading.service`：systemd 服务模板。将 Linux 构建的 `.next/standalone/` 全部内容放入 `/opt/exam-grading-assistant/releases/<release>/`，使 `current` 链接指向该目录；程序由 root 保管，只将 `.next/cache` 交给 `exam-grading` 账户写入。模板安装到 `/etc/systemd/system/exam-grading.service`，使用 `/usr/local/bin/node`。
-- `/etc/exam-grading-assistant/runtime.env`：管理员建立的 root 专用配置文件（权限 0600），将 `GRADING_PUBLIC_ORIGIN` 设为最终 HTTPS 来源。调试时使用的本机来源必须在正式开放前替换。
-- `deploy/clab/nginx.conf.example`：HTTPS 反向代理模板，含请求大小、超时、不落盘缓冲及不重试模型请求等设置。须先换入实际域名和可信证书；若采用学校 HTTPS 代理，按其要求改为受限制的回源配置，并保留外部 HTTPS 来源和 Host。
-- 启用服务使用 `sudo systemctl enable --now exam-grading.service`；更新版本/配置后用 `sudo systemctl restart exam-grading.service`，并检查 `sudo systemctl status exam-grading.service`。仅在检查通过后开放实际所需的网页端口。
-
-此 systemd 模板**限定个人密钥模式**，会主动清除共享密钥、访问码和会话秘密。要改为下节的负责人统一配置模式，必须先调整服务模板中的 `UnsetEnvironment`，再安全配置对应变量并验证登录，不能只更改 `GRADING_MODE`。服务器同时处理的模型请求上限为整个服务实例共 4 个；多人使用的容量尚未压测。
-
-校园网络可达不等于身份认证，CLab 控制台的北大登录不会自动为本网站提供统一登录。Node 版会经服务器转发模型请求，相关材料和手填密钥会经过 CLab，再发送至所选模型服务商；校内托管不代表模型处理完全在校内。Pages 和 CLab 的浏览器进度不自动同步，需要导出与导入备份，并遵守前述统一配置备份的续跑限制。
+校园备案以及域名申请需查看现行[信息资产备案/固定 IP 申请/域名申请表单](https://wsyy.pku.edu.cn/fe/taskCenter/matterApplication?app_id=359)，学校[网站备案说明](https://its.pku.edu.cn/portal_5.jsp)称备案面向教职工。
 
 ## 部署到自己的服务器
 
