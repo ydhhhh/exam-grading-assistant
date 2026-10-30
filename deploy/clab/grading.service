@@ -1,0 +1,44 @@
+[Unit]
+Description=Domestic AI exam grading web service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Create this dedicated, non-login account before enabling the service.
+User=exam-grading
+Group=exam-grading
+# current must contain the Linux-built .next/standalone contents, including
+# server.js, node_modules, public, and .next/static. Never copy macOS binaries.
+WorkingDirectory=/opt/exam-grading-assistant/current
+ExecStart=/usr/local/bin/node server.js
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+Environment=GRADING_MODE=test
+# Required root-owned file (0600): set only the final public origin, e.g.
+# GRADING_PUBLIC_ORIGIN=https://grading.example.invalid
+# Replace the example with the actual trusted HTTPS origin; omit any URL path.
+# Personal-key mode does not need stored provider keys or a login password.
+EnvironmentFile=/etc/exam-grading-assistant/runtime.env
+UnsetEnvironment=GRADING_PREPARE_API_KEY GRADING_API_KEY GRADING_REVIEW_API_KEY GRADING_ACCESS_CODE GRADING_SESSION_SECRET NEXT_PUBLIC_DEPLOYMENT_TARGET NEXT_PUBLIC_BASE_PATH
+Restart=always
+RestartSec=5
+# Give in-flight model requests time to finish during an orderly stop.
+TimeoutStopSec=210
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# Create this cache directory and grant only this directory to exam-grading.
+# Keep the rest of the deployed application owned by root and read-only.
+ReadWritePaths=/opt/exam-grading-assistant/current/.next/cache
+RestrictSUIDSGID=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exam-grading
+
+[Install]
+WantedBy=multi-user.target

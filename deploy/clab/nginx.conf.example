@@ -1,0 +1,63 @@
+# Template only: replace grading.example.invalid and certificate paths before
+# enabling. Obtain a browser-trusted certificate; do not use a self-signed one.
+# Keep Node on 127.0.0.1:3000. Campus reachability is not user authentication.
+#
+# If the university provides managed HTTPS, use its actual proxy configuration
+# instead of this TLS listener. Set GRADING_PUBLIC_ORIGIN to the external HTTPS
+# origin, preserve the original Host, and restrict any HTTP backend listener to
+# that proxy's verified addresses. Do not expose an unencrypted grading endpoint
+# to all campus users. Do not enable this template with placeholder certificates.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name grading.example.invalid;
+
+    # Only useful when HTTP-01 validation is reachable by the certificate issuer.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/exam-grading-acme;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 308 https://grading.example.invalid$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name grading.example.invalid;
+
+    ssl_certificate /etc/letsencrypt/live/grading.example.invalid/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/grading.example.invalid/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # The application's own bounded-input validator remains authoritative.
+    client_max_body_size 10m;
+    client_body_timeout 30s;
+
+    # Do not record request URLs, model credentials, or material bodies here.
+    access_log off;
+    error_log /var/log/nginx/exam-grading-error.log warn;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        # Avoid writing submitted materials or model responses to proxy temp
+        # files. The app separately caps request/response size and concurrency.
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_cache off;
+        # A proxy must never silently retry a potentially charged model call.
+        proxy_next_upstream off;
+    }
+}
