@@ -65,7 +65,7 @@ npm run preview:pages
 
 预览地址为 `http://127.0.0.1:3037/exam-grading-assistant/`。静态成品位于 `out/`，构建临时源码位于 `work/github-pages-build/`；原始 `app/api/` 及 Node 构建保持完整。`NEXT_PUBLIC_DEPLOYMENT_TARGET=github-pages` 仅选择部署方式，`NEXT_PUBLIC_BASE_PATH=/exam-grading-assistant` 只配置公开资源路径，任何密钥都不得写进 `NEXT_PUBLIC_*`。
 
-本仓库 **Settings → Pages → Source** 选择 **GitHub Actions**。`.github/workflows/pages.yml` 只在 `domestic-AI` 推送时自动运行测试、类型检查、静态构建与发布，不会把标准版 main 发布到此 Pages 地址。部署后可执行 `npm run check:pages -- https://ydhhhh.github.io/exam-grading-assistant/` 检查公开入口与本站 PDF 资源。后续 fork 或更改仓库名时，按工作流中的仓库路径重新构建。
+本仓库 **Settings → Pages → Source** 选择 **GitHub Actions**；**Settings → Environments → github-pages → Deployment branches and tags** 限定为 `domestic-AI`（GitHub 新建环境默认可能仅允许 main，需调整）。`.github/workflows/pages.yml` 只在 `domestic-AI` 推送时自动运行测试、类型检查、静态构建与发布，不会把标准版 main 发布到此 Pages 地址。部署后可执行 `npm run check:pages -- https://ydhhhh.github.io/exam-grading-assistant/` 检查公开入口与本站 PDF 资源。后续 fork 或更改仓库名时，按工作流中的仓库路径重新构建。
 
 这是使用者自备密钥的工具：密钥会存在当前浏览器内存并发送给所选官方供应商，刷新后重新填写；不要在公共电脑或不可信扩展环境中使用共享账户长期密钥。Qwen 可填写由负责人安全生成的[短期 API Key](https://help.aliyun.com/zh/model-studio/generate-temporary-api-key)，到期后重新填写。需要让助教完全接触不到共享密钥时，使用下述服务器版。Pages 不提供共享凭据、访问码会话或全账户预算限额。
 
@@ -107,7 +107,7 @@ Compose 可以通过 `NODE_IMAGE` 和 `NPM_REGISTRY` 构建参数选用管理员
 
 ## 验证范围
 
-本轮使用合成材料和模拟接口，检查三阶段参数/密钥分流、国内端点白名单、准备费并入初评账本、独立复核、分歧与异常处理、预算预留、图片隔离、恢复防重发以及密钥不持久化。两种部署共用的 305 项离线测试通过，含浏览器直连、服务端会话、阶段密钥隔离和统一模式备份的付费调用拦截。实际 Chromium 使用模拟响应通过三家服务商 × 四种操作共 12 条路径，全程没有外部模型请求。最终类型检查、Pages 静态导出及 Node 生产构建均已通过；静态产物 240 个文件、约 6.8 MiB。本机子路径页面及 JS/CSS/PDF 资源实际返回成功，浏览器已验证演示批改、分歧保留、PDF 原卷预览及刷新恢复。HTTPS 代理下的登录、会话及密钥隔离已用合成凭据验证；浏览器已检查三阶段切换、演示分歧、原卷预览及刷新恢复。Docker 配置已审查，但本机没有 Docker，未实际构建容器镜像。没有真实模型、手写材料、准确率、正式评分或大陆公网验收。
+本轮使用合成材料和模拟接口，检查三阶段参数/密钥分流、国内端点白名单、准备费并入初评账本、独立复核、分歧与异常处理、预算预留、图片隔离、恢复防重发以及密钥不持久化。两种部署共用的 306 项离线测试通过（含 Node 22.23.4 全量验证），含浏览器直连、服务端会话、阶段密钥隔离和统一模式备份的付费调用拦截。实际 Chromium 使用模拟响应通过三家服务商 × 四种操作共 12 条路径，全程没有外部模型请求。最终类型检查、Pages 静态导出及 Node 生产构建均已通过；静态产物 240 个文件、约 6.8 MiB。本机子路径页面及 JS/CSS/PDF 资源实际返回成功，浏览器已验证演示批改、分歧保留、PDF 原卷预览及刷新恢复。HTTPS 代理下的登录、会话及密钥隔离已用合成凭据验证；浏览器已检查三阶段切换、演示分歧、原卷预览及刷新恢复。Docker 配置已审查，但本机没有 Docker，未实际构建容器镜像。没有真实模型、手写材料、准确率、正式评分或大陆公网验收。
 
 ## 维护与来源
 

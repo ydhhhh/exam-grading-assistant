@@ -8,8 +8,15 @@ const createStudentPDFJob=(p,f,s={},r)=>createDefaultStudentPDFJob(p,f,{reviewPr
 const locks={request:async(_name,_options,fn)=>fn({name:'synthetic-lock'})};
 const options=extra=>({apiKey:'synthetic-key-never-persist',locks,load:async()=>null,persist:async()=>{},isOnline:()=>true,renderPDF,...extra});
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
-async function until(condition){for(let i=0;i<15000;i++){if(condition())return;await tick();}throw Error('Synthetic condition was not reached');}
+const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
+async function until(condition,{timeoutMs=10000,signal}={}){
+  const deadline=performance.now()+timeoutMs;
+  while(!condition()){
+    if(signal?.aborted)throw Error('Synthetic wait was cancelled');
+    if(performance.now()>=deadline)throw Error('Synthetic condition was not reached before its deadline');
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+}
 async function readyJob(count=2,settings={}){
   const file=new File([await syntheticPDF(count+1)],'900000001.pdf',{type:'application/pdf'});
   const job=await createStudentPDFJob(fixturePack(count),[file],{provider:'deepseek',...settings});return {job,file};
@@ -89,19 +96,40 @@ test('unknown DeepSeek fees pause before grading and preserve the successful ide
   assert.equal(out.paused,true);assert.equal(calls,1);assert.equal(job.documents[0].identityState,'done');assert.equal(job.heldCny,5);assert.ok(job.tasks.every(t=>t.state==='ready'));
   await importBackup(snapshotJob(job));
 });
-test('DeepSeek still runs at most four requests and saves reversed completions sequentially', {timeout:20000},async()=>{
+test('synthetic wait allows asynchronous PDF work to finish instead of counting event-loop turns',async t=>{
+  let ready=false;
+  const timer=setTimeout(()=>{ready=true;},250);t.after(()=>clearTimeout(timer));
+  await until(()=>ready,{timeoutMs:1000,signal:t.signal});assert.equal(ready,true);
+  const started=performance.now();
+  await assert.rejects(()=>until(()=>false,{timeoutMs:30,signal:t.signal}),/deadline/);
+  assert.ok(performance.now()-started>=30);
+});
+test('DeepSeek still runs at most four requests and saves reversed completions sequentially', {timeout:40000},async t=>{
   const {job}=await readyJob(6);resolveStudentIdentity(job,job.documents[0].id,{studentId:'900000001',name:''});
-  const calls=[];let active=0,peak=0,writes=0,peakWrites=0,durable;
+  const calls=[];let active=0,peak=0,writes=0,peakWrites=0,durable,stopping=false;
   const persist=async current=>{writes++;peakWrites=Math.max(peakWrites,writes);await tick();durable=snapshotJob(current);writes--;};
   const fetcher=async(url,opts)=>{
     assert.equal(url,'/api/grade');const body=JSON.parse(opts.body);assert.ok(durable.tasks.some(t=>t.attempts.some(a=>a.id===body.requestId&&a.inputs[0].sha256===body.pages[0].sha256)));
-    const gate=deferred();calls.push({body,...gate});active++;peak=Math.max(peak,active);try{return await gate.promise;}finally{active--;}
+    const gate=deferred();calls.push({body,...gate});active++;peak=Math.max(peak,active);
+    const abort=()=>gate.reject(Error('Synthetic request cancelled'));
+    opts.signal.addEventListener('abort',abort,{once:true});if(opts.signal.aborted||stopping)abort();
+    try{return await gate.promise;}finally{active--;opts.signal.removeEventListener('abort',abort);}
   };
-  const running=runJob(job,options({fetcher,persist}));await until(()=>calls.length===4);assert.equal(active,4);
-  const result=c=>new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,result:fixtureResult(c.body.questionId),estimatedCny:.01}));
-  calls[2].resolve(result(calls[2]));await until(()=>calls.length===5);calls[0].resolve(result(calls[0]));await until(()=>calls.length===6);
-  for(const i of [5,4,3,1])calls[i].resolve(result(calls[i]));
-  const out=await running;assert.equal(out.requests,6);assert.equal(peak,4);assert.equal(peakWrites,1);assert.equal(job.heldCny,0);assert.ok(job.tasks.every(t=>t.result));await importBackup(durable);
+  // Failed assertions must drain fake in-flight requests too, otherwise their
+  // production four-minute deadlines keep the test process alive after failure.
+  const cancel=()=>{stopping=true;for(const call of calls)call.reject(Error('Synthetic test cleanup'));};
+  t.signal.addEventListener('abort',cancel,{once:true});
+  const running=runJob(job,options({fetcher,persist,shouldStop:()=>stopping}));
+  const drained=running.catch(()=>{});
+  try{
+    await until(()=>calls.length===4,{signal:t.signal});assert.equal(active,4);
+    const result=c=>new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,result:fixtureResult(c.body.questionId),estimatedCny:.01}));
+    calls[2].resolve(result(calls[2]));await until(()=>calls.length===5,{signal:t.signal});calls[0].resolve(result(calls[0]));await until(()=>calls.length===6,{signal:t.signal});
+    for(const i of [5,4,3,1])calls[i].resolve(result(calls[i]));
+    const out=await running;assert.equal(out.requests,6);assert.equal(peak,4);assert.equal(peakWrites,1);assert.equal(job.heldCny,0);assert.ok(job.tasks.every(t=>t.result));await importBackup(durable);
+  }finally{
+    cancel();await drained;t.signal.removeEventListener('abort',cancel);
+  }
 });
 test('a returned provider mismatch is unpriced, pauses and cannot become a score',async()=>{
   const {job}=await readyJob(1);resolveStudentIdentity(job,job.documents[0].id,{studentId:'900000001',name:''});
