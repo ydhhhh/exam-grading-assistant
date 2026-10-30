@@ -3,7 +3,7 @@
 - 当前目录是 GitHub `ydhhhh/exam-grading-assistant` 的 `domestic-AI` worktree，标准版在同级 `网页版/`；不要混淆分支或发布目的地。先读 README、检查 Git 改动。
 - 用户于2026-10-30指定：仅支持 DeepSeek、Kimi、Qwen；整理规则/姓名学号识别与逐题初评/独立复核三阶段各自配置模型与密钥，默认 Kimi K3.1 Pro / DeepSeek Flash / Kimi K3.1 Pro。
 - 保留 Next.js Node standalone 部署；用户又授权 GitHub Pages 个人密钥版，地址 https://ydhhhh.github.io/exam-grading-assistant/，由 domestic-AI 分支 Actions 发布。不向原 Sites 站点发布国内分支。Pages 上线成功也不能宣称大陆网络或真实模型已验收。
-- 2026-10-30 已部署 CLab Node 服务，当前仅加密管理连接可访问；正式校园域名/HTTPS、网关登录和 Kimi 连通性仍待完成。deploy/clab/ 为个人密钥模式服务/代理模板；主机、密钥及运维记录仅在 Git 忽略的 secrets/clab/，不得发布。申请材料须核实，不代填院系负责人或提交未经确认的承诺。
+- 2026-10-30 已部署 CLab Node 服务，当前仅加密管理连接可访问；网关已登录，Kimi/DeepSeek/Qwen 无密钥 HTTPS 连通已核验，正式校园域名/HTTPS 仍待完成。deploy/clab/ 为个人密钥模式服务/代理模板；主机、密钥及运维记录仅在 Git 忽略的 secrets/clab/，不得发布。备案表已登录且展开 AI 必填项，尚未提交；用户尚未确定教职工负责人。固定 IP 表单的免费校内出站会阻止模型接口，先确认 CLab 适用流程和费用。申请材料须核实，不代填院系负责人或提交未经确认的承诺。
 - Pages 只提供个人密钥直连；managed 备份可以查看/人工确认/导出，不能静默改成个人模式继续付费调用。浏览器不能导入 Node 服务端模块或打包环境密钥。
 - 每阶段使用自己的密钥，不自动借用同厂商另一阶段的密钥。测试密钥只在页面内存，切换阶段模型或恢复不同批次时清除相关密钥；不写入浏览器持久化、日志、源码或导出。
 - 只允许官方白名单模型及固定国内端点，不接受客户端自定义 URL。参数与价格按实际模型校验；公开运行配置不得带密钥，即使管理员填写了错误配置也不泄漏未知字段。
