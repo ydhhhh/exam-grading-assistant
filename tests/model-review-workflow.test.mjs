@@ -45,7 +45,7 @@ test('review disabled jobs retain single stage and do not gain review fields on 
 });
 
 test('managed credentials are never required or sent by client',async()=>{
-  const j=await job(1,{credentialMode:'managed'});await runJob(j,options(async(url,opt)=>{assert.equal(opt.headers['X-Api-Key'],undefined);return normal(url,opt);},{apiKey:''}));assert.equal(j.tasks[0].modelReviewState,'done');
+  const j=await job(1,{credentialMode:'managed'});await runJob(j,options(async(url,opt)=>{assert.equal(opt.headers['X-Api-Key'],undefined);return normal(url,opt);},{apiKey:'',reviewApiKey:''}));assert.equal(j.tasks[0].modelReviewState,'done');
 });
 
 test('review network failure preserves initial result and reserve, never retries',async()=>{
@@ -117,9 +117,15 @@ test('cross-provider test review uses separate ephemeral key and keeps both out 
   const saved=JSON.stringify(snapshotJob(j));assert.ok(!saved.includes('review-secret-DO-NOT-STORE'));assert.ok(!saved.includes('sk-synthetic-DO-NOT-STORE'));await importBackup(snapshotJob(j));
 });
 
-test('review setup without a cross-provider test key stops before review reservation',async()=>{
-  const j=await job(1,{reviewProfile:getDefaultProfile('qwen','review')});let calls=0;
-  await assert.rejects(()=>runJob(j,options(async(url,opt)=>{calls++;return normal(url,opt);},{reviewApiKey:''})),/独立模型复核/);assert.equal(calls,1);assert.equal(j.tasks[0].result.status,'scored');assert.equal(j.tasks[0].reviewAttempts.length,0);assert.equal(j.heldCny,0);
+test('missing or blank cross-provider review key pauses before review reservation',async()=>{
+  for(const reviewApiKey of ['', '   ']){
+    const j=await job(1,{reviewProfile:getDefaultProfile('qwen','review')});const calls=[];
+    const first=await runJob(j,options(async(url,opt)=>{calls.push(url);return normal(url,opt);},{reviewApiKey}));
+    assert.deepEqual(calls,['/api/grade']);assert.equal(first.paused,true);assert.match(first.reason,/第三步密钥/);
+    assert.equal(j.tasks[0].result.status,'scored');assert.equal(j.tasks[0].modelReviewState,'pending');assert.equal(j.tasks[0].reviewAttempts.length,0);assert.equal(j.heldCny,0);assert.equal(j.spentCny,.01);assert.equal(taskAdvice(j,j.tasks[0]).total,null);
+    const again=await runJob(j,options(()=>{throw Error('missing key must not replay initial grading');},{reviewApiKey}));
+    assert.equal(again.requests,0);assert.equal(again.paused,true);
+  }
 });
 
 test('known review rejection retains initial score and fee, and cannot be silently resubmitted',async()=>{

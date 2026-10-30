@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DEFAULT_STAGE_PROFILES,getDefaultProfile} from '../lib/grading/providers.mjs';
-import {createStudentPDFJob,prepareTeachingMaterials,attachPreparation,restoreSessionBackup,runJob,snapshotJob,importBackup,rebindJob,hashJSON,restorePreparationDraft} from '../lib/grading/browser-workflow.mjs';
+import {createStudentPDFJob,prepareTeachingMaterials,attachPreparation,restoreSessionBackup,runJob,taskAdvice,snapshotJob,importBackup,rebindJob,hashJSON,restorePreparationDraft} from '../lib/grading/browser-workflow.mjs';
 import {fixturePack,fixtureResult,fixtureIdentity,syntheticPDF,renderPDF} from './helpers/pdf-rendering.mjs';
 const clone=value=>structuredClone(value);
 const locks={request:async(_name,_options,fn)=>fn({})};
@@ -49,11 +49,17 @@ test('three independent profile choices include Qwen and use distinct keys withi
   await importBackup(snapshotJob(job));
 });
 
-test('missing independent review key never falls back to the grade key',async()=>{
+test('missing independent key saves identity and initial grading, then resumes only review after restore',async()=>{
   const stages={...clone(DEFAULT_STAGE_PROFILES),grade:getDefaultProfile('qwen','grade','qwen3.8-max'),review:getDefaultProfile('qwen','review','qwen3.8-flash')};
-  const {job}=await sample({stageProfiles:stages});let reviews=0;
-  await assert.rejects(()=>runJob(job,{...options,stageKeys:{grade:keys.grade},fetcher:async(url,opt)=>{const kind=url.split('/').at(-1);if(kind==='review')reviews++;return answer(kind,JSON.parse(opt.body));}}),/独立模型复核/);
-  assert.equal(reviews,0);assert.equal(job.tasks[0].reviewAttempts.length,0);assert.equal(job.tasks[0].result.status,'scored');
+  const {job,file}=await sample({stageProfiles:stages});const calls=[],saved=[];
+  const first=await runJob(job,{...options,stageKeys:{grade:keys.grade},persist:async value=>saved.push(snapshotJob(value)),fetcher:async(url,opt)=>{const kind=url.split('/').at(-1);calls.push(kind);assert.equal(opt.headers['X-Api-Key'],keys.grade);return answer(kind,JSON.parse(opt.body));}});
+  assert.deepEqual(calls,['identity','grade']);assert.equal(first.paused,true);assert.match(first.reason,/第三步密钥/);
+  assert.equal(job.documents[0].identityState,'done');assert.equal(job.tasks[0].reviewAttempts.length,0);assert.equal(job.tasks[0].modelReviewState,'pending');assert.equal(job.tasks[0].result.status,'scored');assert.equal(taskAdvice(job,job.tasks[0]).total,null);assert.equal(job.spentCny,.02);assert.equal(job.heldCny,0);
+  const durable=saved.at(-1);assert.equal(durable.tasks[0].state,'done');assert.equal(durable.tasks[0].modelReviewState,'pending');assert.ok(!JSON.stringify(durable).includes(keys.grade));
+  const restored=await importBackup(durable);await rebindJob(restored,[file],{load:async()=>null});
+  const second=await runJob(restored,{...options,fetcher:async(url,opt)=>{const kind=url.split('/').at(-1);assert.equal(kind,'review');assert.equal(opt.headers['X-Api-Key'],keys.review);calls.push(kind);return answer(kind,JSON.parse(opt.body));}});
+  assert.equal(second.paused,false);assert.equal(second.requests,1);assert.deepEqual(calls,['identity','grade','review']);assert.equal(restored.spentCny,.03);assert.equal(restored.heldCny,0);assert.equal(restored.tasks[0].modelReviewState,'done');
+  assert.equal(restored.documents[0].attempts.length,1);assert.equal(restored.tasks[0].attempts.length,1);assert.equal(restored.tasks[0].reviewAttempts.length,1);await importBackup(snapshotJob(restored));
 });
 
 test('changed stage response or restored model cannot be silently adopted',async()=>{
