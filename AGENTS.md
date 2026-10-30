@@ -2,7 +2,8 @@
 
 - 当前目录是 GitHub `ydhhhh/exam-grading-assistant` 的 `domestic-AI` worktree，标准版在同级 `网页版/`；不要混淆分支或发布目的地。先读 README、检查 Git 改动。
 - 用户于2026-10-30指定：仅支持 DeepSeek、Kimi、Qwen；整理规则/姓名学号识别与逐题初评/独立复核三阶段各自配置模型与密钥，默认 Kimi K3.1 Pro / DeepSeek Flash / Kimi K3.1 Pro。
-- 用普通 Next.js Node standalone 构建和部署，不要求 Sites 或 Cloudflare。用户目前没有云托管入口，本轮交付可部署版本；不得宣称已在大陆公网部署或验证。
+- 保留 Next.js Node standalone 部署；用户又授权 GitHub Pages 个人密钥版，地址 https://ydhhhh.github.io/exam-grading-assistant/，由 domestic-AI 分支 Actions 发布。不向原 Sites 站点发布国内分支。Pages 上线成功也不能宣称大陆网络或真实模型已验收。
+- Pages 只提供个人密钥直连；managed 备份可以查看/人工确认/导出，不能静默改成个人模式继续付费调用。浏览器不能导入 Node 服务端模块或打包环境密钥。
 - 每阶段使用自己的密钥，不自动借用同厂商另一阶段的密钥。测试密钥只在页面内存，切换阶段模型或恢复不同批次时清除相关密钥；不写入浏览器持久化、日志、源码或导出。
 - 只允许官方白名单模型及固定国内端点，不接受客户端自定义 URL。参数与价格按实际模型校验；公开运行配置不得带密钥，即使管理员填写了错误配置也不泄漏未知字段。
 - 真实付费请求前锁定所有阶段的模型、参数、费率并核对响应与账本。费用未知或保存失败时暂停，不自动重试。默认最多4并发、逐次保存；不得回退发送学生原始PDF。
@@ -10,6 +11,6 @@
 - 复核必须独立看原作答和教师规则，不接收初评分数/理由/标记；初评与复核用不同模型，逐点分歧或干扰指令转人工。模型一致不等于评分准确；正式成绩需教师实质确认。
 - 保留旧版与备份，国内版使用独立流水线版本和浏览器存储，不自动迁移标准版批次。
 - 使用合成数据和模拟接口开发测试；本轮不付费调用、不上传学生材料、不发布成绩。不要把教师原题、学生身份、答卷、导出或密钥提交。
-- 修改相关逻辑后跑 npm test、npm run typecheck、npm run build；部署后检查首页、runtime-config及本站PDF资源。浏览器/模拟测试不能替代真实评分或大陆可达性验收。Docker未实测要说明。
+- 修改相关逻辑后跑 npm test、npm run typecheck、npm run build；Pages 改动还需 npm run build:pages 与 npm run check:pages。服务器部署检查首页、runtime-config及本站PDF资源；Pages 不应请求本站服务器 API，须检查项目子路径及直连适配。浏览器/模拟测试不能替代真实评分或大陆可达性验收。Docker未实测要说明。
 - 仅提交本轮负责的代码；用户本次已明确确认项目提交署名，不修改全局设置。本轮明确授权创建并推送 domestic-AI，不推送父项目私人历史或改写远端历史。
 - README 为当前操作/构建/交付说明；临时文件与构建放 tmp/、.next/，不逐轮制作项目ZIP。保留已有第三方许可证。

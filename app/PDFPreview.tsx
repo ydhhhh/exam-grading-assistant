@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, Minus, Plus, RotateCcw } from "lucide-react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 import "./pdf-preview.css";
+import {publicPath} from "@/lib/grading/browser-deployment.mjs";
 
 type Props = { file: Blob; name: string };
 type LoadedPDF = { file: Blob; document: PDFDocumentProxy };
@@ -12,7 +13,7 @@ type PreviewStatus = { file: Blob; view?: string; error?: string; ready?: boolea
 let enginePromise: Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")> | undefined;
 function loadEngine() {
   enginePromise ??= import("pdfjs-dist/legacy/build/pdf.mjs").then(engine => {
-    engine.GlobalWorkerOptions.workerSrc = `/pdfjs/${engine.version}/pdf.worker.min.mjs`;
+    engine.GlobalWorkerOptions.workerSrc = publicPath(`/pdfjs/${engine.version}/pdf.worker.min.mjs`);
     return engine;
   }).catch(error => { enginePromise = undefined; throw error; });
   return enginePromise;
@@ -76,7 +77,7 @@ export default function PDFPreview({ file, name }: Props) {
         }, 30000);
         const [engine, buffer] = await Promise.all([loadEngine(), file.arrayBuffer()]);
         if (cancelled) return;
-        const assets = `/pdfjs/${engine.version}/`;
+        const assets = publicPath(`/pdfjs/${engine.version}/`);
         const options = {
           data: new Uint8Array(buffer), isEvalSupported: false, enableXfa: false,
           useSystemFonts: false, cMapUrl: assets + "cmaps/", cMapPacked: true,

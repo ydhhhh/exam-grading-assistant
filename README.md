@@ -2,7 +2,9 @@
 
 本目录维护 GitHub 的 `domestic-AI` 分支（Git 分支名不能含空格）。它从标准版 main 的 `e798040` 功能源版本分出，保留 PDF 答卷、逐题建议评分、独立模型复核、人工改分、费用账本、断点恢复及 CSV 导出。**不支持 GPT/OpenAI API**。
 
-当前交付为可独立部署的 Next.js 网站，尚未部署到国内公网。标准版的原网址已于 2026-10-30 更新到 v5，但那个网址不是国内版入口。国内版不依赖 ChatGPT 登录或 Sites/Cloudflare 运行服务，浏览器字体、PDF.js 及转图资源均由本站提供。大陆实际可达性还须在选定服务器、域名后实测，不能由源码或 GitHub 分支保证。
+提供两种部署方式：**GitHub Pages 个人密钥版**与 **Node 服务器版**。Pages 发布入口为 [国内阅卷助手](https://ydhhhh.github.io/exam-grading-assistant/)，由本分支的 Actions 自动构建。服务器版支持负责人统一保管密钥及访问码登录。两者都不需要 ChatGPT 登录，字体、PDF.js 及转图资源均由本站提供。
+
+GitHub Pages 不提供 Node 后端，个人密钥版在浏览器内验证请求并直连国内模型官方接口，不向 GitHub 上传密钥或答卷。`github.io` 能否在目标校园或运营商网络稳定访问仍须当地实测；发布成功不等于大陆可达性已验收。标准版原网址已更新到 v5，仍作为另一个入口保留。
 
 ## 三阶段设置
 
@@ -20,13 +22,13 @@ Kimi K3.1 Pro、DeepSeek Flash 的图片能力及当前模型名称均已按官�
 
 1. 打开部署后的网址，先体验合成演示，不产生 API 费用。
 2. 选择试题、参考答案、评分细则（PDF、PNG/JPEG/WebP、UTF-8 文本；Word 请先另存 PDF）。每份原件最多 3 MiB，三份合计最多 6 MiB。PDF 在浏览器转图，转图后超限须减小材料。
-3. 在三个 API 卡片分别选择服务商、模型、密钥。默认手填模式只把密钥保留在当前页面内存；刷新后重新填写，进度和导出不含密钥。负责人统一配置模式则先用访问码登录。
+3. 在三个 API 卡片分别选择服务商、模型、密钥。默认手填模式只把密钥保留在当前页面内存；刷新后重新填写，进度和导出不含密钥。服务器版的负责人统一配置模式则先用访问码登录，Pages 版无需访问码。
 4. 整理评分规则并人工核对题号、分值、评分点。负责人可导出一份统一规则，其他助教导入，避免重复整理和规则漂移。
 5. 每名学生一份 `学号.pdf`，若有 m 道题则严格 m+1 页：第 1 页姓名学号，第 2 至 m+1 页对应各题。选择答卷文件夹，先检查页数，再开始批改。首页身份图片与匿名作答分别发送。
 6. 独立复核默认开启，只查看原作答及教师规则，不接收初评分数、理由或标记。逐点不一致、缺页、费用未定等保持可见；有争议的建议分留空，人工对照原卷确认后再汇总。
 7. 保持网页打开，可暂停、下载进度备份、按学号查看改分或导出建议成绩。关闭页面不会继续后台执行；费用未定的调用不自动重发。
 
-国内版使用独立的浏览器存储及流水线版本，不加载标准版旧进度。升级前请保留旧站及备份，使用统一规则新建国内批次。学生材料、密钥、成绩、进度备份不进入 Git。正式成绩仍须教师或授权助教实质审阅确认，程序不连接教务系统。
+国内版使用独立的浏览器存储及流水线版本，不加载标准版旧进度。Pages 与 Node 版也各自保存进度；服务器统一配置模式的备份可在 Pages 查看、人工确认和导出，但不能直接续跑付费请求，须保留原备份并新建个人密钥批次。升级前请保留旧站及备份，使用统一规则新建国内批次。学生材料、密钥、成绩、进度备份不进入 Git。正式成绩仍须教师或授权助教实质审阅确认，程序不连接教务系统。
 
 ## 本机启动与复现
 
@@ -47,6 +49,27 @@ npm run check:deployment
 ```
 
 生产结果位于 `.next/standalone/`，包括 Node 服务、前端及 PDF 资源。它是可重建产物，不提交到 Git。构建和安装需要从包仓库下载依赖，**网站运行时**无需访问 npm、GitHub、ChatGPT 或外部前端 CDN。
+
+## GitHub Pages 部署与本机预览
+
+[GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages) 仅托管静态文件。本分支构建时不包含服务器 API 路由；四个阅卷步骤复用相同的请求校验、结构化输出、费用核对和独立复核逻辑，由浏览器发送到固定的 Kimi、DeepSeek、Qwen 官方接口。
+
+```sh
+npm ci
+npm test
+npm run typecheck
+npm run build:pages
+npm run check:pages
+npm run preview:pages
+```
+
+预览地址为 `http://127.0.0.1:3037/exam-grading-assistant/`。静态成品位于 `out/`，构建临时源码位于 `work/github-pages-build/`；原始 `app/api/` 及 Node 构建保持完整。`NEXT_PUBLIC_DEPLOYMENT_TARGET=github-pages` 仅选择部署方式，`NEXT_PUBLIC_BASE_PATH=/exam-grading-assistant` 只配置公开资源路径，任何密钥都不得写进 `NEXT_PUBLIC_*`。
+
+本仓库 **Settings → Pages → Source** 选择 **GitHub Actions**。`.github/workflows/pages.yml` 只在 `domestic-AI` 推送时自动运行测试、类型检查、静态构建与发布，不会把标准版 main 发布到此 Pages 地址。部署后可执行 `npm run check:pages -- https://ydhhhh.github.io/exam-grading-assistant/` 检查公开入口与本站 PDF 资源。后续 fork 或更改仓库名时，按工作流中的仓库路径重新构建。
+
+这是使用者自备密钥的工具：密钥会存在当前浏览器内存并发送给所选官方供应商，刷新后重新填写；不要在公共电脑或不可信扩展环境中使用共享账户长期密钥。Qwen 可填写由负责人安全生成的[短期 API Key](https://help.aliyun.com/zh/model-studio/generate-temporary-api-key)，到期后重新填写。需要让助教完全接触不到共享密钥时，使用下述服务器版。Pages 不提供共享凭据、访问码会话或全账户预算限额。
+
+2026-10-30 的无密钥跨域预检中，三家接口均允许 `https://ydhhhh.github.io` 的 `Authorization` 和 `Content-Type` 请求头；Kimi 不允许可选请求追踪头，浏览器版本已移除该头，任务编号仍保留在本机账本。供应商可调整跨域策略；预检成功不代表账户权限、真实推理或校园网络已经通过验收。
 
 ## 部署到自己的服务器
 
@@ -84,15 +107,18 @@ Compose 可以通过 `NODE_IMAGE` 和 `NPM_REGISTRY` 构建参数选用管理员
 
 ## 验证范围
 
-本轮使用合成材料和模拟接口，检查三阶段参数/密钥分流、国内端点白名单、准备费并入初评账本、独立复核、分歧与异常处理、预算预留、图片隔离、恢复防重发以及密钥不持久化。275 项离线测试、独立安装、类型检查、生产构建和本机页面/API/PDF资源检查已通过。HTTPS 代理下的登录、会话及密钥隔离已用合成凭据验证；浏览器已检查三阶段切换、演示分歧、原卷预览及刷新恢复。Docker 配置已审查，但本机没有 Docker，未实际构建容器镜像。没有真实模型、手写材料、准确率、正式评分或大陆公网验收。
+本轮使用合成材料和模拟接口，检查三阶段参数/密钥分流、国内端点白名单、准备费并入初评账本、独立复核、分歧与异常处理、预算预留、图片隔离、恢复防重发以及密钥不持久化。两种部署共用的 305 项离线测试通过，含浏览器直连、服务端会话、阶段密钥隔离和统一模式备份的付费调用拦截。实际 Chromium 使用模拟响应通过三家服务商 × 四种操作共 12 条路径，全程没有外部模型请求。最终类型检查、Pages 静态导出及 Node 生产构建均已通过；静态产物 240 个文件、约 6.8 MiB。本机子路径页面及 JS/CSS/PDF 资源实际返回成功，浏览器已验证演示批改、分歧保留、PDF 原卷预览及刷新恢复。HTTPS 代理下的登录、会话及密钥隔离已用合成凭据验证；浏览器已检查三阶段切换、演示分歧、原卷预览及刷新恢复。Docker 配置已审查，但本机没有 Docker，未实际构建容器镜像。没有真实模型、手写材料、准确率、正式评分或大陆公网验收。
 
 ## 维护与来源
 
 - `lib/grading/providers.mjs`：模型白名单、阶段默认、参数与费用。
-- `lib/grading/api-service.mjs`、`server-runtime.mjs`：国内官方接口适配、密钥与访问会话。
+- `lib/grading/api-core.mjs`：两种部署共用的官方接口协议、结果校验与评分逻辑。
+- `lib/grading/api-service.mjs`、`server-runtime.mjs`：服务器密钥与访问会话。
+- `lib/grading/browser-api.mjs`、`browser-deployment.mjs`：Pages 直连接口、个人密钥模式及子路径配置。
 - `app/StageConfiguration.tsx`、`app/page.tsx`：三阶段设置与操作页面。
 - `lib/grading/browser-workflow.mjs`：批次锁定、队列、费用、备份、恢复与导出。
-- `Dockerfile`、`compose.yaml`、`scripts/*domestic*.mjs`：独立部署与检查。
+- `Dockerfile`、`compose.yaml`、`scripts/*domestic*.mjs`：独立服务器部署与检查。
+- `.github/workflows/pages.yml`、`scripts/*pages*.mjs`：Pages 静态构建、资源检查、预览与自动发布。
 
 官方依据：[Kimi K3.1 Pro](https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart)、[Kimi 价格](https://platform.kimi.com/)、[DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/)、[DeepSeek 价格](https://api-docs.deepseek.com/quick_start/pricing/)、[Qwen Chat 参数](https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions)、[Qwen 结构化输出](https://help.aliyun.com/en/model-studio/qwen-structured-output)、[Qwen3.8 Max](https://help.aliyun.com/en/model-studio/qwen3-8-max)、[Qwen3.8 Flash](https://help.aliyun.com/en/model-studio/qwen3-8-flash)。这里只登记链接，没有下载外部文献。
 

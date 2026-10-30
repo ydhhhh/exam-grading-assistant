@@ -15,7 +15,10 @@
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "build:pages": "node scripts/build-pages.mjs",
+    "check:pages": "node scripts/check-pages-deployment.mjs",
+    "preview:pages": "node scripts/preview-pages.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
