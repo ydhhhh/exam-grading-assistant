@@ -126,21 +126,23 @@ test('presentation helpers do not mutate source tasks, documents, or request rec
 });
 
 const modelResult=(awards,overrides={})=>({question_id:'Q1',status:'scored',criteria:Object.entries(awards).map(([criterion_id,awarded])=>({criterion_id,awarded,evidence_refs:['P1'],reason:'合成评分依据'})),flags:[],alternative_solution:false,...overrides});
-const reviewed=(overrides={},document=doc())=>task({state:'done',result:modelResult({C1:1,C2:0}),modelReview:modelResult({C1:0,C2:1}),modelReviewState:'done',reviewAttempts:[{state:'done',costCny:0.02}],advice:{total:null,source:'unresolved',flags:['MODEL_REVIEW_DISAGREEMENT']},...overrides},document);
+const reviewed=(overrides={},document=doc())=>task({state:'done',result:modelResult({C1:4,C2:0}),modelReview:modelResult({C1:0,C2:1}),modelReviewState:'done',reviewAttempts:[{state:'done',costCny:0.02}],advice:{total:null,source:'unresolved',flags:['MODEL_REVIEW_DISAGREEMENT']},...overrides},document);
 
-test('equal totals with different point awards remain visible as model disagreement',()=>{
-  const item=reviewed(),summary=getModelReviewSummary(item);
-  assert.equal(summary.initialTotal,1);assert.equal(summary.reviewTotal,1);
-  assert.equal(summary.status,'disagreement');
-  assert.deepEqual(summary.disagreements,[{criterionId:'C1',initial:1,review:0},{criterionId:'C2',initial:0,review:1}]);
-  assert.deepEqual(summary.differences,['C1','C2']);
-  assert.equal(getTaskFlags(item).disagreement,true);
-  assert.equal(getTaskFlags(item).attention,true);
-  assert.equal(getTaskFlags(item).complete,false);
-  assert.equal(filterResults([item],{filter:'disagreement'}).length,1);
-  assert.equal(filterDocuments([item.display.document],[item],{filter:'disagreement'}).length,1);
-  assert.equal(countResultFilters([item]).disagreement,1);
-  assert.equal(countDocumentFilters([item.display.document],[item]).disagreement,1);
+test('equal question totals preserve criterion differences without entering the human queue',()=>{
+  const item=reviewed({result:modelResult({C1:1,C2:0}),advice:{total:1,source:'ai_review',flags:[]}}),summary=getModelReviewSummary(item);
+  assert.equal(summary.initialTotal,1);assert.equal(summary.reviewTotal,1);assert.equal(summary.status,'agreed');
+  assert.deepEqual(summary.disagreements,[{criterionId:'C1',initial:1,review:0},{criterionId:'C2',initial:0,review:1}]);assert.deepEqual(summary.differences,['C1','C2']);
+  assert.equal(getTaskFlags(item).disagreement,false);assert.equal(getTaskFlags(item).attention,false);assert.equal(getTaskFlags(item).complete,true);
+  assert.equal(filterResults([item],{filter:'disagreement'}).length,0);assert.equal(filterDocuments([item.display.document],[item],{filter:'disagreement'}).length,0);
+  assert.equal(countResultFilters([item]).disagreement,0);assert.equal(countDocumentFilters([item.display.document],[item]).disagreement,0);
+});
+
+test('only question-score differences above two enter the disagreement queue',()=>{
+  for(const [initial,status,total] of [[3,'adjusted',2],[4,'disagreement',null]]){
+    const item=reviewed({result:modelResult({C1:initial,C2:0}),advice:{total,source:total===null?'unresolved':'ai_adjusted',flags:total===null?['MODEL_REVIEW_DISAGREEMENT']:[]}});
+    assert.equal(getModelReviewSummary(item).status,status);assert.equal(getTaskFlags(item).disagreement,total===null);assert.equal(getTaskFlags(item).attention,total===null);assert.equal(getTaskFlags(item).complete,total!==null);
+    assert.equal(filterResults([item],{filter:'disagreement'}).length,total===null?1:0);assert.equal(filterDocuments([item.display.document],[item],{filter:'disagreement'}).length,total===null?1:0);
+  }
 });
 
 test('model agreement is determined by criterion IDs and preserves decimal precision',()=>{
@@ -185,7 +187,7 @@ test('unresolved points and missing or malformed review results never masquerade
   assert.equal(getModelReviewSummary(item).status,'unresolved');assert.equal(getModelReviewSummary(item).initialTotal,null);
   assert.equal(getTaskFlags(item).needsReview,true);
   item={...item,modelReview:modelResult({C1:0,C2:0})};
-  assert.equal(getModelReviewSummary(item).status,'disagreement');assert.equal(getModelReviewSummary(item).reviewTotal,0);
+  assert.equal(getModelReviewSummary(item).status,'unresolved');assert.equal(getModelReviewSummary(item).reviewTotal,0);
   for(const modelReview of [null,modelResult({C1:1}),modelResult({C1:NaN,C2:0}),modelResult({C1:1,C2:0},{flags:[{code:'UNREADABLE'}]})]){
     const summary=getModelReviewSummary(reviewed({modelReview}));
     assert.equal(summary.status,'unresolved');
@@ -202,7 +204,7 @@ test('disagreement filtering is scoped to its own PDF and current search',()=>{
 
 test('agreement also requires valid allowed scores and evidence for the actual question',()=>{
   const question={question_id:'Q1',text:'合成题',solution:'合成答案',max_score:2,criteria:['C1','C2'].map(criterion_id=>({criterion_id,description:'合成评分点',allowed_scores:[0,1],requires:[]}))};
-  const base=reviewed({question,pages:[{page_id:'P1'}],modelReview:modelResult({C1:1,C2:0})});
+  const base=reviewed({question,pages:[{page_id:'P1'}],result:modelResult({C1:1,C2:0}),modelReview:modelResult({C1:1,C2:0})});
   assert.equal(getModelReviewSummary(base).status,'agreed');
   const badScore=modelResult({C1:2,C2:0});
   assert.equal(getModelReviewSummary({...base,result:badScore,modelReview:structuredClone(badScore)}).status,'unresolved');

@@ -32,11 +32,12 @@ test('review stage sends original anonymous evidence and binds initial result/pr
   assert.ok(!JSON.stringify(snapshotJob(j)).includes('sk-synthetic'));
 });
 
-test('equal total with different criterion scores is a disagreement until human confirmation',async()=>{
+test('equal question totals keep the score and preserve different criterion awards',async()=>{
   const j=await job(1);await runJob(j,options(async(url,opt)=>json(response(JSON.parse(opt.body),url==='/api/review',url==='/api/review'?[2,1]:[1,2]))));
-  const t=j.tasks[0],summary=getModelReviewSummary(t);assert.equal(summary.initialTotal,3);assert.equal(summary.reviewTotal,3);assert.equal(summary.status,'disagreement');assert.equal(taskAdvice(j,t).total,null);
-  assert.match(exportCSV(j),/Q1初评分/);assert.match(exportCSV(j),/分数分歧待人工确认/);assert.match(exportCSV(j),/MODEL_REVIEW_DISAGREEMENT/);
-  reviewTask(t,{C1:2,C2:1},'Synthetic reviewer','');assert.equal(taskAdvice(j,t).source,'human');assert.equal(taskAdvice(j,t).total,3);assert.equal(getModelReviewSummary(t).status,'disagreement');await importBackup(snapshotJob(j));
+  const t=j.tasks[0],summary=getModelReviewSummary(t);assert.equal(summary.initialTotal,3);assert.equal(summary.reviewTotal,3);assert.equal(summary.status,'agreed');assert.equal(taskAdvice(j,t).total,3);assert.equal(taskAdvice(j,t).scores,null);
+  assert.deepEqual(summary.differences,['C1','C2']);assert.match(exportCSV(j),/Q1初评分/);assert.doesNotMatch(exportCSV(j),/MODEL_REVIEW_DISAGREEMENT/);
+  const restored=await importBackup(snapshotJob(j));assert.equal(taskAdvice(restored,restored.tasks[0]).total,3);
+  reviewTask(t,{C1:2,C2:0},'Synthetic reviewer','');assert.equal(taskAdvice(j,t).source,'human');assert.equal(taskAdvice(j,t).total,2);assert.equal(getModelReviewSummary(t).status,'agreed');await importBackup(snapshotJob(j));
 });
 
 test('review disabled jobs retain single stage and do not gain review fields on restore',async()=>{
@@ -96,8 +97,8 @@ test('review stage keeps at most four in flight and serializes every durable sav
   const j=await job(7,{concurrency:4});let active=0,peak=0,saving=0;await runJob(j,options(async(url,opt)=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,4));active--;return normal(url,opt);},{persist:async()=>{saving++;assert.equal(saving,1);await new Promise(r=>setTimeout(r,1));saving--;}}));assert.ok(peak>1&&peak<=4);assert.equal(j.tasks.reduce((n,t)=>n+t.reviewAttempts.length,0),7);assert.equal(j.heldCny,0);
 });
 
-test('PDF demo models agreement and disagreement without network or fees',async()=>{
-  const j=await studentPDFDemoJob({reviewProfile:profile});await runJob(j,options(()=>{throw Error('network forbidden');}));assert.equal(j.spentCny,0);assert.equal(j.heldCny,0);assert.equal(getModelReviewSummary(j.tasks[0]).status,'disagreement');assert.ok(j.tasks.slice(1).every(t=>getModelReviewSummary(t).status==='agreed'));assert.match(exportCSV(j),/模型复核状态/);await importBackup(snapshotJob(j));
+test('PDF demo models agreement and a merged score without network or fees',async()=>{
+  const j=await studentPDFDemoJob({reviewProfile:profile});await runJob(j,options(()=>{throw Error('network forbidden');}));assert.equal(j.spentCny,0);assert.equal(j.heldCny,0);assert.equal(getModelReviewSummary(j.tasks[0]).status,'adjusted');assert.equal(taskAdvice(j,j.tasks[0]).total,5);assert.ok(j.tasks.slice(1).every(t=>getModelReviewSummary(t).status==='agreed'));assert.match(exportCSV(j),/模型复核状态/);await importBackup(snapshotJob(j));
 });
 
 test('pause after review reservation releases unsent hold and manual resume sends only once',async()=>{
@@ -155,13 +156,13 @@ function csvRecords(csv){
   return rows.slice(1).map(row=>Object.fromEntries(rows[0].map((header,index)=>[header,row[index]])));
 }
 
-test('PDF CSV marks a human-resolved disagreement while preserving initial 5 and review 4',async()=>{
+test('PDF CSV gives a human override precedence over the merged score while preserving 5 and 4',async()=>{
   const j=await studentPDFDemoJob({reviewProfile:profile});await runJob(j,options(()=>{throw Error('network forbidden');}));
   const t=j.tasks[0];assert.equal(getModelReviewSummary(t).initialTotal,5);assert.equal(getModelReviewSummary(t).reviewTotal,4);
   reviewTask(t,{C1:1,C2:3},'Synthetic teacher','');
   const row=csvRecords(exportCSV(j)).find(row=>row['学号']==='9000000001');
-  assert.equal(row.Q1,'4');assert.equal(row['Q1初评分'],'5');assert.equal(row['Q1模型复核分'],'4');assert.equal(row['Q1模型复核状态'],'初复评有分歧，已人工确认');assert.ok(!row['Q1模型复核状态'].includes('待人工确认'));
-  assert.equal(getModelReviewSummary(t).status,'disagreement');
+  assert.equal(row.Q1,'4');assert.equal(row['Q1初评分'],'5');assert.equal(row['Q1模型复核分'],'4');assert.match(row['Q1模型复核状态'],/已人工确认/);assert.ok(!row['Q1模型复核状态'].includes('待人工确认'));
+  assert.equal(getModelReviewSummary(t).status,'adjusted');
 });
 
 test('CSV distinguishes human-confirmed pending failed and uncertain model review without clearing their state',async()=>{
@@ -201,5 +202,18 @@ test('a suspected instruction in either round survives a clean high-score counte
     assert.equal((flaggedStage==='/api/grade'?t.result:t.modelReview).flags[0].code,'UNTRUSTED_INSTRUCTION');
     assert.equal((await runJob(restored,options(()=>{throw Error('No replay after human confirmation');}))).requests,0);
     await importBackup(snapshotJob(restored));
+  }
+});
+
+
+test('merged and large-difference scores survive export and backup without overwriting raw model results',async()=>{
+  for(const [initial,review,total,status] of [[[0,1],[1,2],2,'adjusted'],[[0,1],[0,2],2,'adjusted'],[[0,0],[2,2],null,'disagreement']]){
+    const j=await job(1);await runJob(j,options(async(url,opt)=>json(response(JSON.parse(opt.body),url==='/api/review',url==='/api/review'?review:initial))));
+    const t=j.tasks[0],original=structuredClone({result:t.result,modelReview:t.modelReview});
+    assert.equal(getModelReviewSummary(t).status,status);assert.equal(taskAdvice(j,t).total,total);
+    const row=csvRecords(exportCSV(j))[0];assert.equal(row.Q1,total===null?'':String(total));assert.equal(row['Q1初评分'],String(initial[0]+initial[1]));assert.equal(row['Q1模型复核分'],String(review[0]+review[1]));
+    const restored=await importBackup(snapshotJob(j)),rt=restored.tasks[0];assert.equal(taskAdvice(restored,rt).total,total);assert.equal(getModelReviewSummary(rt).status,status);assert.deepEqual({result:rt.result,modelReview:rt.modelReview},original);
+    await rebindJob(restored,files(1));assert.equal((await runJob(restored,options(()=>{throw Error('Merge must not call a model again');}))).requests,0);
+    reviewTask(rt,{C1:2,C2:2},'Synthetic teacher','');const manual=await importBackup(snapshotJob(restored));assert.equal(taskAdvice(manual,manual.tasks[0]).source,'human');assert.equal(taskAdvice(manual,manual.tasks[0]).total,4);
   }
 });
