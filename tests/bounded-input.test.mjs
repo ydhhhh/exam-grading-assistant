@@ -47,11 +47,11 @@ test('four interrupted incoming API bodies release all request slots with no pro
   for(const response of await Promise.all(pending)){
     const data=await response.json();assert.equal(data.code,'REQUEST_ABORTED');assert.equal(data.notSent,true);assert.equal(data.estimatedCny,0);assert.equal(data.uncertain,false);
   }
-  const available=await handleAPI(request('{}'),'grade',fetcher);assert.equal((await available.json()).code,'REQUEST_ID');assert.equal(calls,0);
+  const available=await handleAPI(request('{}'),'grade',fetcher);assert.equal((await available.json()).code,'STAGE_PROFILES');assert.equal(calls,0);
 });
 
 test('aborting a stalled login returns a bounded no-charge error without a session',async()=>{
-  const runtime=resolveRuntime({GRADING_MODE:'managed',GRADING_API_KEY:'synthetic-primary-key-for-stream-test',GRADING_ACCESS_CODE:'synthetic-access-code',GRADING_SESSION_SECRET:'synthetic-session-secret-at-least-thirty-two'});
+  const runtime=resolveRuntime({GRADING_MODE:'managed',GRADING_API_KEY:'synthetic-primary-key-for-stream-test',GRADING_PREPARE_API_KEY:'synthetic-prepare-key-for-stream-test',GRADING_REVIEW_API_KEY:'synthetic-review-key-for-stream-test',GRADING_ACCESS_CODE:'synthetic-access-code',GRADING_SESSION_SECRET:'synthetic-session-secret-at-least-thirty-two'});
   const controller=new AbortController();
   const pending=handleSession(request(new ReadableStream({pull(){}}),controller),runtime);controller.abort();
   const response=await pending,data=await response.json();assert.equal(data.code,'REQUEST_ABORTED');assert.equal(data.notSent,true);assert.equal(data.estimatedCny,0);assert.equal(response.headers.get('set-cookie'),null);

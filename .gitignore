@@ -54,3 +54,6 @@ yarn-error.log*
 /logs/
 /exports/
 /secrets/
+
+# Keep the empty, reviewed deployment template.
+!/.env.production.example

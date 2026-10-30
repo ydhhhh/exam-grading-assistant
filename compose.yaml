@@ -1,0 +1,19 @@
+services:
+  grading:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    restart: unless-stopped
+    # For shared access, put an HTTPS reverse proxy in front of this local port.
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    env_file:
+      - path: .env.production.local
+        required: false
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"

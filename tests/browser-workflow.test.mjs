@@ -3,8 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 import {VERSION} from '../lib/grading/validation.mjs';
-import {DEFAULT_SETTINGS,canonical,hashJSON,readUpload,indexAnswers,createJob,snapshotJob,importBackup,rebindJob,reviewTask,requeueTask,runJob,exportCSV,demoJob,attachPreparation,restorePreparationDraft,restoreBackupSafely} from '../lib/grading/browser-workflow.mjs';
+import {DEFAULT_SETTINGS,canonical,hashJSON,readUpload,indexAnswers,createJob as createDefaultJob,snapshotJob,importBackup,rebindJob,reviewTask,requeueTask,runJob,exportCSV,demoJob,attachPreparation,restorePreparationDraft,restoreBackupSafely} from '../lib/grading/browser-workflow.mjs';
 
+import {DEFAULT_STAGE_PROFILES} from '../lib/grading/providers.mjs';
+// Isolate the original single-pass ledger tests; default three-stage behavior has separate coverage.
+const createJob=(p,f,s={},r)=>createDefaultJob(p,f,{reviewProfile:null,...s},r);
+const createStudentPDFJob=(p,f,s={},r)=>createDefaultStudentPDFJob(p,f,{reviewProfile:null,...s},r);
 if(!globalThis.crypto)globalThis.crypto=webcrypto;
 const PNG=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/nN8AAAAASUVORK5CYII='),c=>c.charCodeAt(0));
 const file=(path,tag='')=>{const f=new File([PNG,tag],path.split('/').at(-1),{type:'image/png'});Object.defineProperty(f,'webkitRelativePath',{value:path});return f;};
@@ -14,7 +18,7 @@ const locks={request:async(_name,_opts,fn)=>fn({name:'test'})};
 const stored=[];const persist=async job=>{stored.push(snapshotJob(job));};
 function result(questionId){return {question_id:questionId,status:'scored',criteria:[{criterion_id:'C1',awarded:1,evidence_refs:['P1'],reason:'合成依据'},{criterion_id:'C2',awarded:2,evidence_refs:['P1'],reason:'合成依据'}],flags:[],alternative_solution:false};}
 function response(questionId,cost=0.01){return {result:result(questionId),usage:{input_tokens:100,output_tokens:100},requestId:'server-r1',responseId:'resp1',model:'mock',raw:'raw-result',estimatedCny:cost};}
-const asResponse=(obj,status=200)=>new Response(JSON.stringify(obj),{status,headers:{'Content-Type':'application/json'}});
+const asResponse=(obj,status=200)=>new Response(JSON.stringify(obj&&typeof obj==='object'&&!Array.isArray(obj)?{provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,...obj}:obj),{status,headers:{'Content-Type':'application/json'}});
 function runnerOptions(fetcher,options={}){let ms=100000;return {renderPDF,apiKey:'sk-test-DO-NOT-STORE',locks,persist,load:async()=>null,fetcher,clock:()=>ms,sleep:async wait=>{ms+=wait;},...options};}
 
 test('canonical fingerprints sort keys and reject undefined/nonfinite',async()=>{
@@ -106,7 +110,7 @@ test('storage failure before request makes zero network calls',async()=>{
 });
 test('page restart marks inflight uncertain and preserves reserve',async()=>{
  const job=await createJob(pack(),files());const t=job.tasks[0];
- t.attempts.push({id:'interrupted',kind:'grade',inputs:t.pages.map(p=>({page_id:p.page_id,sourceSha256:p.sha256,sourceMime:p.mime,sha256:p.sha256,mime:p.mime,size:p.size,renderVersion:'original-v1'})),state:'in_flight',reservedCny:5,costCny:null,sentAt:new Date().toISOString()});t.state='running';job.heldCny=5;
+ t.attempts.push({id:'interrupted',kind:'grade',provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,inputs:t.pages.map(p=>({page_id:p.page_id,sourceSha256:p.sha256,sourceMime:p.mime,sha256:p.sha256,mime:p.mime,size:p.size,renderVersion:'original-v1'})),state:'in_flight',reservedCny:5,costCny:null,sentAt:new Date().toISOString()});t.state='running';job.heldCny=5;
  const restored=await importBackup(snapshotJob(job));assert.equal(restored.tasks[0].state,'uncertain');assert.equal(restored.heldCny,5);
 });
 test('saved API response restores without reissuing that request',async()=>{
@@ -133,7 +137,9 @@ test('manual review reason optional, changes preserved, scores/rereviewer constr
 });
 test('material preparation fees and uncertain reserves join the immutable task budget',async()=>{
  const job=await createJob(pack(),files());
- attachPreparation(job,[{id:'prepare1',kind:'prepare',state:'done',reservedCny:5,costCny:.3,raw:'response',apiKey:'do-not-save'}, {id:'prepare2',kind:'prepare',state:'in_flight',reservedCny:5,costCny:null}]);
+ const inputs=['paper','solution','rubric'].map(role=>({role,page_id:'P1',sourceSha256:'a'.repeat(64),sourceMime:'text/plain',sha256:'a'.repeat(64),mime:'text/plain',size:10,renderVersion:'original-v1'}));
+ const base={kind:'prepare',provider:'kimi',stageProfile:DEFAULT_STAGE_PROFILES.prepare,inputs,documentHashes:Object.fromEntries(inputs.map(p=>[p.role,p.sourceSha256]))};
+ attachPreparation(job,[{...base,id:'prepare1',state:'done',reservedCny:5,costCny:.3,raw:'response',response:{stageProfile:DEFAULT_STAGE_PROFILES.prepare},apiKey:'do-not-save'}, {...base,id:'prepare2',state:'in_flight',reservedCny:5,costCny:null}]);
  assert.equal(job.spentCny,.3);assert.equal(job.heldCny,5);assert.equal(job.preparationAttempts[1].state,'uncertain');assert.ok(!JSON.stringify(snapshotJob(job)).includes('do-not-save'));
  const restored=await importBackup(snapshotJob(job));assert.equal(restored.spentCny,.3);assert.equal(restored.heldCny,5);
  assert.throws(()=>attachPreparation(job,[job.preparationAttempts[0]]),/不能移除/);
@@ -218,7 +224,7 @@ test('preparation recovery rejects malformed policy metadata and preapproved or 
 
 // Full student PDFs use a separate identity ledger and immutable document IDs.
 import {PDFDocument,StandardFonts} from 'pdf-lib';
-import {createStudentPDFJob,studentDisplay,documentForTask,taskAdvice,resolveStudentIdentity,retryStudentIdentity,refreshIdentityMappings,studentPDFDemoJob} from '../lib/grading/browser-workflow.mjs';
+import {createStudentPDFJob as createDefaultStudentPDFJob,studentDisplay,documentForTask,taskAdvice,resolveStudentIdentity,retryStudentIdentity,refreshIdentityMappings,studentPDFDemoJob} from '../lib/grading/browser-workflow.mjs';
 async function studentPDF(name='0012345678.pdf',count=3,tag='sample'){
  const pdf=await PDFDocument.create();pdf.setCreationDate(new Date('2000-01-01T00:00:00Z'));pdf.setModificationDate(new Date('2000-01-01T00:00:00Z'));const font=await pdf.embedFont(StandardFonts.Helvetica);
  for(let i=0;i<count;i++){const p=pdf.addPage([595,842]);p.drawText((i===0?'PRIVATE IDENTITY ':'ANSWER Q'+i+' ')+tag,{x:30,y:700,size:20,font});}

@@ -3,14 +3,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createJob,studentPDFDemoJob,runJob,taskAdvice,getModelReviewSummary,reviewTask,snapshotJob,importBackup,rebindJob,hashJSON,exportCSV} from '../lib/grading/browser-workflow.mjs';
 
-const profile={provider:'openai',model:'synthetic-review-only',reasoning:'high',outputTokens:8000,pricing:{input:3,cachedInput:1,output:12,budgetFx:7.5,version:'synthetic-test'}};
+import {getDefaultProfile,DEFAULT_STAGE_PROFILES} from '../lib/grading/providers.mjs';
+const profile=getDefaultProfile('kimi','review');
 const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/nN8AAAAASUVORK5CYII='),c=>c.charCodeAt(0));
 const files=(n=2)=>Array.from({length:n},(_,i)=>new File([png,String(i)],`S${i+1}_Q1_01.png`,{type:'image/png'}));
 const pack={exam_id:'MODELREVIEW',title:'Synthetic review test',version:'1',demo:false,approved_by:'Synthetic teacher',policies:'Synthetic test only.',questions:[{question_id:'Q1',text:'Synthetic',solution:'Synthetic',max_score:4,criteria:[{criterion_id:'C1',description:'A',allowed_scores:[0,1,2],requires:[]},{criterion_id:'C2',description:'B',allowed_scores:[0,1,2],requires:[]}]}]};
 const score=(values=[1,2])=>({question_id:'Q1',status:'scored',criteria:values.map((awarded,i)=>({criterion_id:'C'+(i+1),awarded,evidence_refs:['P1'],reason:'Synthetic evidence'})),flags:[],alternative_solution:false});
-const response=(body,review=false,values)=>({result:score(values),provider:review?body.reviewProfile.provider:'openai',requestId:body.requestId,estimatedCny:review?.02:.01,usage:{input_tokens:100,output_tokens:100},...(review?{reviewProfile:body.reviewProfile,initialResultHash:body.initialResultHash}:{} )});
+const response=(body,review=false,values)=>({result:score(values),provider:review?body.reviewProfile.provider:body.stageProfiles.grade.provider,stageProfile:body.stageProfiles[review?'review':'grade'],requestId:body.requestId,estimatedCny:review?.02:.01,usage:{input_tokens:100,output_tokens:100},...(review?{reviewProfile:body.reviewProfile,initialResultHash:body.initialResultHash}:{} )});
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status});
-const options=(fetcher,extra={})=>({renderPDF,apiKey:'sk-synthetic-DO-NOT-STORE',fetcher,persist:async()=>{},load:async()=>null,locks:{request:async(_,__,fn)=>fn({})},...extra});
+const options=(fetcher,extra={})=>({renderPDF,apiKey:'sk-synthetic-DO-NOT-STORE',reviewApiKey:'review-key-synthetic-only',fetcher,persist:async()=>{},load:async()=>null,locks:{request:async(_,__,fn)=>fn({})},...extra});
 const job=async(n=2,settings={})=>createJob(pack,files(n),{reviewProfile:structuredClone(profile),concurrency:1,...settings});
 const normal=async(url,opt)=>{const body=JSON.parse(opt.body);return json(response(body,url==='/api/review'));};
 
@@ -40,7 +41,7 @@ test('equal total with different criterion scores is a disagreement until human 
 });
 
 test('review disabled jobs retain single stage and do not gain review fields on restore',async()=>{
-  const j=await createJob(pack,files(1));await runJob(j,options(normal));const restored=await importBackup(snapshotJob(j));assert.equal(restored.tasks[0].modelReviewState,undefined);assert.equal(taskAdvice(restored,restored.tasks[0]).source,'ai');
+  const j=await createJob(pack,files(1),{reviewProfile:null});await runJob(j,options(normal));const restored=await importBackup(snapshotJob(j));assert.equal(restored.tasks[0].modelReviewState,undefined);assert.equal(taskAdvice(restored,restored.tasks[0]).source,'ai');
 });
 
 test('managed credentials are never required or sent by client',async()=>{
@@ -108,17 +109,17 @@ test('pause after review reservation releases unsent hold and manual resume send
 });
 
 test('cross-provider test review uses separate ephemeral key and keeps both out of saved response',async()=>{
-  const alternate={...structuredClone(profile),provider:'deepseek'},j=await job(1,{reviewProfile:alternate});
+  const alternate=getDefaultProfile('qwen','review'),j=await job(1,{reviewProfile:alternate});
   await runJob(j,options(async(url,opt)=>{
-    const b=JSON.parse(opt.body);assert.equal(opt.headers['X-Api-Key'],url==='/api/review'?'review-secret-DO-NOT-STORE':'sk-synthetic-DO-NOT-STORE');assert.equal(opt.headers['X-Api-Provider'],url==='/api/review'?'deepseek':'openai');
+    const b=JSON.parse(opt.body);assert.equal(opt.headers['X-Api-Key'],url==='/api/review'?'review-secret-DO-NOT-STORE':'sk-synthetic-DO-NOT-STORE');assert.equal(opt.headers['X-Api-Provider'],url==='/api/review'?'qwen':'deepseek');
     return json({...response(b,url==='/api/review'),raw:'review-secret-DO-NOT-STORE sk-synthetic-DO-NOT-STORE'});
   },{reviewApiKey:'review-secret-DO-NOT-STORE'}));
   const saved=JSON.stringify(snapshotJob(j));assert.ok(!saved.includes('review-secret-DO-NOT-STORE'));assert.ok(!saved.includes('sk-synthetic-DO-NOT-STORE'));await importBackup(snapshotJob(j));
 });
 
 test('review setup without a cross-provider test key stops before review reservation',async()=>{
-  const j=await job(1,{reviewProfile:{...structuredClone(profile),provider:'deepseek'}});let calls=0;
-  await assert.rejects(()=>runJob(j,options(async(url,opt)=>{calls++;return normal(url,opt);})),/复核服务商/);assert.equal(calls,1);assert.equal(j.tasks[0].result.status,'scored');assert.equal(j.tasks[0].reviewAttempts.length,0);assert.equal(j.heldCny,0);
+  const j=await job(1,{reviewProfile:getDefaultProfile('qwen','review')});let calls=0;
+  await assert.rejects(()=>runJob(j,options(async(url,opt)=>{calls++;return normal(url,opt);},{reviewApiKey:''})),/独立模型复核/);assert.equal(calls,1);assert.equal(j.tasks[0].result.status,'scored');assert.equal(j.tasks[0].reviewAttempts.length,0);assert.equal(j.heldCny,0);
 });
 
 test('known review rejection retains initial score and fee, and cannot be silently resubmitted',async()=>{

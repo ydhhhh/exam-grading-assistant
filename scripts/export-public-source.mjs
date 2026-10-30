@@ -14,7 +14,7 @@ const tree=[];
 for(const entry of entries){
   const [header,name]=entry.split('\t');const [mode,type]=header.split(' ');
   if(type!=='blob'||!['100644','100755'].includes(mode))throw Error('Unsupported source entry: '+name);
-  if(name.startsWith('/')||name.split('/').includes('..')||/(^|\/)(private|secrets|runs|logs|exports|data|output|outputs|work|tmp|node_modules|dist|\.next|\.vinext|\.wrangler|\.sites-runtime|\.agents|\.codex|\.git)(\/|$)/.test(name)||/(^|\/)(\.env|\.dev\.vars)($|\.)/.test(name))throw Error('Excluded source path: '+name);
+  if(name.startsWith('/')||name.split('/').includes('..')||/(^|\/)(private|secrets|runs|logs|exports|data|output|outputs|work|tmp|node_modules|dist|\.next|\.vinext|\.wrangler|\.sites-runtime|\.agents|\.codex|\.git)(\/|$)/.test(name)||(/(^|\/)(\.env|\.dev\.vars)($|\.)/.test(name)&&name!=='.env.production.example'))throw Error('Excluded source path: '+name);
   let content=git('show',revision+':'+name).toString('utf8');
   if(content.includes('\u0000')||content.includes('\ufffd'))throw Error('Non-text source requires review: '+name);
   if(name==='.openai/hosting.json')content=JSON.stringify({d1:null,r2:null},null,2)+'\n';

@@ -2,15 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PDFDocument} from 'pdf-lib';
 import {renderPDF} from './helpers/pdf-rendering.mjs';
-import {createStudentPDFJob, resolveStudentIdentity, runJob, snapshotJob, importBackup, rebindJob} from '../lib/grading/browser-workflow.mjs';
+import {createStudentPDFJob as createDefaultStudentPDFJob, resolveStudentIdentity, runJob, snapshotJob, importBackup, rebindJob} from '../lib/grading/browser-workflow.mjs';
 
+import {DEFAULT_STAGE_PROFILES} from '../lib/grading/providers.mjs';
+const createStudentPDFJob=(p,f,s={},r)=>createDefaultStudentPDFJob(p,f,{reviewProfile:null,...s},r);
 // Independent scheduler audit: synthetic pages and controllable network/storage only.
 const locks={request:async(_name,_options,fn)=>fn({name:'audit-lock'})};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 async function until(predicate){const deadline=Date.now()+5000;while(Date.now()<deadline){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,1));}throw Error('Audit condition was not reached within 5 seconds');}
 function result(questionId){return {question_id:questionId,status:'scored',criteria:[{criterion_id:'C1',awarded:1,evidence_refs:['P1'],reason:'Synthetic evidence'}],flags:[],alternative_solution:false};}
-function response(questionId,cost=.125){return new Response(JSON.stringify({result:result(questionId),usage:{input_tokens:10,output_tokens:10},estimatedCny:cost,model:'mock',raw:'synthetic result'}),{status:200,headers:{'content-type':'application/json'}});}
+function response(questionId,cost=.125){return new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,result:result(questionId),usage:{input_tokens:10,output_tokens:10},estimatedCny:cost,model:'mock',raw:'synthetic result'}),{status:200,headers:{'content-type':'application/json'}});}
 async function readyJob(count=8,settings={}){
  const pack={exam_id:'AUDIT',title:'Synthetic scheduler audit',version:'1',demo:false,approved_by:'Synthetic reviewer',policies:'Synthetic data only.',questions:Array.from({length:count},(_,i)=>({question_id:'Q'+(i+1),text:'Synthetic question',solution:'Synthetic solution',max_score:1,criteria:[{criterion_id:'C1',description:'Synthetic criterion',allowed_scores:[0,1],requires:[]}]}))};
  const pdf=await PDFDocument.create();for(let i=0;i<=count;i++)pdf.addPage([200,300]);
@@ -103,7 +105,7 @@ test('audit: identity calls use the same four-slot limit and all identities fini
  const covers=[];let gradeCalls=0,allIdentitiesSettled=false;
  const fetcher=async(url,options)=>{const body=JSON.parse(options.body);if(url==='/api/grade'){assert.equal(allIdentitiesSettled,true);gradeCalls++;return response(body.questionId);}
   assert.equal(url,'/api/identity');const gate=deferred();covers.push({...gate,requestId:body.requestId});return gate.promise;};
- const identityResponse=(i)=>new Response(JSON.stringify({identity:{name:'Synthetic '+i,student_id:ids[i],name_status:'readable',student_id_status:'readable',warnings:[]},usage:{input_tokens:1,output_tokens:1},estimatedCny:.01}),{status:200});
+ const identityResponse=(i)=>new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,identity:{name:'Synthetic '+i,student_id:ids[i],name_status:'readable',student_id_status:'readable',warnings:[]},usage:{input_tokens:1,output_tokens:1},estimatedCny:.01}),{status:200});
  const running=runJob(job,opts(fetcher));await until(()=>covers.length===4);assert.equal(gradeCalls,0);
  covers[2].resolve(identityResponse(2));await until(()=>covers.length===5);assert.equal(gradeCalls,0);
  for(const i of [4,3,1])covers[i].resolve(identityResponse(i));await tick();assert.equal(gradeCalls,0);

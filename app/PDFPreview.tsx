@@ -67,6 +67,13 @@ export default function PDFPreview({ file, name }: Props) {
     void (async () => {
       try {
         if (!file.size || file.size > 64 * 1024 * 1024) throw new Error("Unsupported PDF size");
+        timer = setTimeout(() => {
+          if (!cancelled) {
+            setStatus({ file, error: "PDF 预览等待时间过长，请打开原 PDF 核对。" });
+            cancelled = true;
+            clearLoading();
+          }
+        }, 30000);
         const [engine, buffer] = await Promise.all([loadEngine(), file.arrayBuffer()]);
         if (cancelled) return;
         const assets = `/pdfjs/${engine.version}/`;
@@ -78,13 +85,6 @@ export default function PDFPreview({ file, name }: Props) {
           stopAtErrors: true,
         };
         loading = engine.getDocument(options);
-        timer = setTimeout(() => {
-          if (!cancelled) {
-            setStatus({ file, error: "PDF 预览等待时间过长，请打开原 PDF 核对。" });
-            cancelled = true;
-            clearLoading();
-          }
-        }, 30000);
         const document = await loading.promise;
         clearTimeout(timer);
         if (cancelled) return;
@@ -114,6 +114,13 @@ export default function PDFPreview({ file, name }: Props) {
     if (viewport) { viewport.scrollTop = 0; viewport.scrollLeft = 0; }
     void (async () => {
       try {
+        timer = setTimeout(() => {
+          if (!cancelled) {
+            setStatus({ file, view: viewKey, error: "本页预览超时，请打开原 PDF 核对。" });
+            cancelled = true;
+            rendering?.cancel();
+          }
+        }, 30000);
         page = await current.getPage(Math.min(pageNumber, current.numPages));
         if (cancelled) return;
         const original = page.getViewport({ scale: 1 });
@@ -137,13 +144,6 @@ export default function PDFPreview({ file, name }: Props) {
         const context = canvas.getContext("2d", { alpha: false });
         if (!context) throw new Error("Canvas unavailable");
         rendering = page.render({ canvas, canvasContext: context, viewport: rendered, background: "rgb(255,255,255)" });
-        timer = setTimeout(() => {
-          if (!cancelled) {
-            setStatus({ file, view: viewKey, error: "本页预览超时，请打开原 PDF 核对。" });
-            cancelled = true;
-            rendering?.cancel();
-          }
-        }, 30000);
         await rendering.promise;
         if (cancelled) return;
         host.replaceChildren(canvas);

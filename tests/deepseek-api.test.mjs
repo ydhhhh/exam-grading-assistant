@@ -4,10 +4,12 @@ import {handleAPI,estimateCny} from '../lib/grading/api-service.mjs';
 import {getProvider,normalizeUsage,pricingMetadata} from '../lib/grading/providers.mjs';
 import {readUpload,prepareTeachingMaterials} from '../lib/grading/browser-workflow.mjs';
 import {fixturePack,fixtureResult,fixtureIdentity,envelope,syntheticPDF,renderPDF} from './helpers/pdf-rendering.mjs';
+import {DEFAULT_STAGE_PROFILES,getDefaultProfile} from '../lib/grading/providers.mjs';
+const testStages=()=>({...structuredClone(DEFAULT_STAGE_PROFILES),prepare:getDefaultProfile('deepseek','prepare')});
 const KEY='synthetic-deepseek-key-no-live-request';
 const png=new File([Uint8Array.from([137,80,78,71,13,10,26,10])],'private-student-name.png',{type:'image/png'});
 async function page(){return {page_id:'P1',...await readUpload(png)};}
-function request(action,body,provider='deepseek'){return new Request('https://grading.example/api/'+action,{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-provider':provider,'x-api-key':KEY},body:JSON.stringify(body)});}
+function request(action,body,provider='deepseek'){return new Request('https://grading.example/api/'+action,{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-provider':provider,'x-api-key':KEY},body:JSON.stringify({stageProfiles:testStages(),...body})});}
 async function call(action,body,result=fixtureResult(),usage,provider='deepseek'){
   const calls=[];const response=await handleAPI(request(action,body,provider),action,async(url,options)=>{calls.push({url,options});return new Response(JSON.stringify(envelope(result,usage)),{headers:{'content-type':'application/json'}});});
   return {response,data:await response.json(),calls};
@@ -22,28 +24,16 @@ test('DeepSeek uses its fixed official Responses endpoint, model and independent
   assert.deepEqual(x.data.requestSettings,{reasoning:'max',outputTokens:16000});
   assert.equal(payload.input[0].content[1].type,'input_image');assert.equal(payload.tools,undefined);assert.equal(payload.previous_response_id,undefined);
   assert.ok(!options.body.includes('private-student-name'));assert.ok(!options.body.includes(KEY));
-  assert.equal(x.data.provider,'deepseek');assert.equal(x.data.estimatedCny,0.0029475);assert.equal(x.data.pricing.basis,'peak-rate-ceiling');
+  assert.equal(x.data.provider,'deepseek');assert.equal(x.data.estimatedCny,0.0029475);assert.equal(x.data.pricing.basis,'locked-stage-rate-snapshot');assert.equal(x.data.pricing.version,'2026-10-30-USD-peak-ceiling');
 });
 test('DeepSeek identity accepts one anonymous image without any grading rules',async()=>{
   const x=await call('identity',{requestId:'synthetic-identity',page:await page()},fixtureIdentity());
   assert.equal(x.response.status,200);const payload=JSON.parse(x.calls[0].options.body);
-  assert.equal(payload.reasoning.effort,'high');assert.equal(payload.max_output_tokens,8000);
-  assert.deepEqual(x.data.requestSettings,{reasoning:'high',outputTokens:8000});
+  assert.equal(payload.reasoning.effort,'max');assert.equal(payload.max_output_tokens,16000);
+  assert.deepEqual(x.data.requestSettings,{reasoning:'max',outputTokens:16000});
   assert.equal(payload.text.format.name,'student_identity');assert.ok(!JSON.stringify(payload).includes('Synthetic question'));assert.equal(x.data.identity.student_id,'900000001');
 });
-test('OpenAI keeps medium reasoning and 8000 tokens for grading, identity and preparation',async()=>{
-  const file=await readUpload(png),pack=fixturePack();pack.approved_by='';
-  const cases=[
-    ['grade',await gradeBody(),fixtureResult()],
-    ['identity',{requestId:'openai-identity',page:await page()},fixtureIdentity()],
-    ['prepare',{requestId:'openai-prepare',documents:['paper','solution','rubric'].map(role=>({role,...file}))},{pack,warnings:[]}],
-  ];
-  for(const [action,body,result] of cases){
-    const x=await call(action,body,result,undefined,'openai');assert.equal(x.response.status,200);
-    const payload=JSON.parse(x.calls[0].options.body);
-    assert.equal(payload.model,'gpt-6.1-terra');assert.equal(payload.reasoning.effort,'medium');assert.equal(payload.max_output_tokens,8000);
-  }
-});
+test('retired OpenAI provider is rejected before transport',async()=>{ const x=await call('grade',await gradeBody(),fixtureResult(),undefined,'openai');assert.equal(x.calls.length,0);assert.equal(x.data.code,'PROVIDER'); });
 test('raw PDF or Word input is blocked locally for DeepSeek, including identity and grading',async()=>{
   const pdf=new File([await syntheticPDF(1)],'single.pdf',{type:'application/pdf'}),upload={...await readUpload(pdf),page_id:'P1'};
   for(const action of ['grade','identity']){

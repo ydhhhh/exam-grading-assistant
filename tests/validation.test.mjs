@@ -5,7 +5,7 @@ export const fixturePack=()=>({exam_id:'EXAM',title:'Synthetic only',version:'v1
 export const fixtureResult=()=>({question_id:'Q1',status:'scored',criteria:[{criterion_id:'C1',awarded:2,evidence_refs:['P1'],reason:'method observed'},{criterion_id:'C2',awarded:3,evidence_refs:['P1'],reason:'result observed'}],flags:[],alternative_solution:false});
 const task=()=>({inputComplete:true,question:fixturePack().questions[0],pages:[{page_id:'P1'}],result:fixtureResult(),review:null});
 
-test('valid pack and result accepted',()=>{assert.ok(VERSION);assert.equal(MODEL,'gpt-6.1-terra');validatePack(fixturePack());validateResult(fixtureResult(),fixturePack().questions[0],['P1']);});
+test('valid pack and result accepted',()=>{assert.ok(VERSION);assert.equal(MODEL,'deepseek-flash');validatePack(fixturePack());validateResult(fixtureResult(),fixturePack().questions[0],['P1']);});
 test('unapproved only allowed in draft',()=>{let p=fixturePack();p.approved_by='';assert.throws(()=>validatePack(p));assert.equal(validatePack(p,{draft:true}),p);});
 test('unknown secret fields rejected',()=>{const p=fixturePack();p.apiKey='should never persist';assert.throws(()=>validatePack(p));});
 test('duplicate questions and criteria rejected',()=>{const p=fixturePack();p.questions.push(structuredClone(p.questions[0]));assert.throws(()=>validatePack(p));const q=fixturePack().questions[0];q.criteria[1].criterion_id='C1';assert.throws(()=>validateQuestion(q));});

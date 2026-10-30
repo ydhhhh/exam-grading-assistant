@@ -15,5 +15,5 @@ export default function ServiceAccess({config,error,provider,apiKey,onKey,keyRef
       <label htmlFor="service-access-code">助教访问码</label><div className="service-login"><input id="service-access-code" type="password" autoComplete="off" required value={accessCode} disabled={disabled} onChange={e=>setAccessCode(e.target.value)} placeholder="填写负责人提供的访问码"/><button className="button secondary" disabled={disabled||!accessCode.trim()}>验证</button></div><small>访问码仅用于授权使用，模型密钥留在服务端。</small>
     </form>)}
   </div>;
-  return <div className="key-section"><label htmlFor="api-key"><KeyRound size={17}/>测试用 {provider.label} API key</label><div className="key-input"><input id="api-key" ref={keyRef} type={visible?"text":"password"} autoComplete="off" spellCheck={false} placeholder={`填写测试用 ${provider.label} 密钥`} value={apiKey} disabled={disabled} onChange={e=>onKey(e.target.value)}/><button aria-label={visible?"隐藏密钥":"显示密钥"} onClick={()=>setVisible(!visible)} type="button">{visible?<EyeOff size={17}/>:<Eye size={17}/>}</button></div><small>当前为测试模式。密钥只在页面内存使用；正式模式由负责人统一配置。</small></div>;
+  return <div className="key-section service-access"><strong><KeyRound size={17}/>自行配置 API</strong><p>在下方三个步骤分别选择服务商并填写密钥。</p><small>密钥只在当前页面内存中使用，不写入进度、备份或本地存储；刷新页面后须重新填写。</small></div>;
 }

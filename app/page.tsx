@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Upload, FileText, FolderOpen, KeyRound, ArrowRight, Check, ChevronDown, Download, Search, X, Pause, Play, ShieldCheck, RotateCcw, AlertCircle, BookOpen, Eye, EyeOff } from "lucide-react";
 import { validatePack } from "@/lib/grading/validation.mjs";
-import { prepareTeachingMaterials, snapshotJob, saveJob, loadJob, restoreBackupSafely, exportCSV, runJob, rebindJob, requeueTask, demoJob, studentPDFDemoJob, DEFAULT_SETTINGS, ANSWER_TRANSPORT_VERSION, createStudentPDFJob, reviewTask, attachPreparation, clearLastJob, restorePreparationDraft, documentForTask, studentDisplay, taskAdvice, resolveStudentIdentity, retryStudentIdentity } from "@/lib/grading/browser-workflow.mjs";
+import { prepareTeachingMaterials, snapshotJob, saveJob, loadJob, restoreSessionBackup, exportCSV, runJob, rebindJob, requeueTask, demoJob, studentPDFDemoJob, DEFAULT_SETTINGS, ANSWER_TRANSPORT_VERSION, createStudentPDFJob, reviewTask, attachPreparation, clearLastJob, restorePreparationDraft, documentForTask, studentDisplay, taskAdvice, resolveStudentIdentity, retryStudentIdentity } from "@/lib/grading/browser-workflow.mjs";
 
 import { materializeStudentPDFPage } from "@/lib/grading/student-pdf.mjs";
-import { getProvider, getRequestSettings } from "@/lib/grading/providers.mjs";
+import { getProvider, getDefaultProfile, DEFAULT_STAGE_PROFILES, validateStageProfiles, stageProfilesEqual } from "@/lib/grading/providers.mjs";
 import PDFPreview from "./PDFPreview";
 import { profilesEqual } from "@/lib/grading/review-profile.mjs";
 import ServiceAccess from "./ServiceAccess";
+import StageConfiguration from "./StageConfiguration";
 import { ModelReviewSummary, ModelReviewCriterion, modelReviewLabels, InstructionConcern } from "./ModelReview";
 import { computeReviewComparison } from "@/lib/grading/review-comparison.mjs";
 import ReviewDialog from "./ReviewDialog";
@@ -18,6 +19,7 @@ import { RESULT_FILTERS, filterResults, filterDocuments, countResultFilters, cou
 
 type AnyData = any;
 const defaultSettings = {...DEFAULT_SETTINGS};
+const settingsWithStages=(previous:any,stageProfiles:any)=>({...previous,stageProfiles,provider:stageProfiles.grade.provider,reasoning:stageProfiles.grade.reasoning,outputTokens:stageProfiles.grade.outputTokens,reviewProfile:stageProfiles.review});
 const roleLabels: Record<string,string> = { paper: "试题", solution: "参考答案", rubric: "评分细则" };
 const stateLabels: Record<string,string> = {ready:"等待批改", input_missing:"缺少材料", running:"正在批改", done:"已生成建议", error:"调用未完成", uncertain:"请求待核查"};
 const identityLabels: Record<string,string> = {ready:"身份已关联",pending:"等待识别姓名学号",conflict:"文件名与首页学号冲突",missing_id:"需要补全学号",duplicate:"学号重复",roster_mismatch:"学号不在应收名单",input_error:"PDF需要检查"};
@@ -27,7 +29,7 @@ function unadoptedResult(task:AnyData){
   try{
     const attempt=task.attempts?.findLast((a:AnyData)=>a.response?.raw);
     const raw=JSON.parse(attempt.response.raw);
-    const text=(raw.output||[]).flatMap((o:AnyData)=>(o.content||[]).filter((c:AnyData)=>c.type==='output_text').map((c:AnyData)=>c.text)).join('\n');
+    const text=typeof raw.choices?.[0]?.message?.content==='string'?raw.choices[0].message.content:(raw.output||[]).flatMap((o:AnyData)=>(o.content||[]).filter((c:AnyData)=>c.type==='output_text').map((c:AnyData)=>c.text)).join('\n');
     const result=JSON.parse(text);
     return result?.question_id===task.questionId&&Array.isArray(result.criteria)?result:null;
   }catch{return null;}
@@ -62,6 +64,7 @@ export default function Home() {
   const [documents, setDocuments] = useState<Record<string,File|null>>({paper:null, solution:null, rubric:null});
   const [answerFiles, setAnswerFiles] = useState<File[]>([]);
   const [apiKey, setApiKey] = useState("");
+  const [prepareApiKey,setPrepareApiKey] = useState("");
   const [reviewApiKey, setReviewApiKey] = useState("");
   const [runtimeConfig, setRuntimeConfig] = useState<AnyData>(null);
   const [configError, setConfigError] = useState("");
@@ -72,6 +75,9 @@ export default function Home() {
   const [job, setJob] = useState<AnyData>(null);
   const [settings, setSettings] = useState<any>(defaultSettings);
   const provider = getProvider(settings.provider);
+  const prepareProfile=settings.stageProfiles.prepare;
+  const prepareProvider=getProvider(prepareProfile.provider);
+  const stageKeys={prepare:prepareApiKey,grade:apiKey,review:reviewApiKey};
   const [busy, setBusy] = useState("");
   const [running, setRunning] = useState(false);
   const [runProgress, setRunProgress] = useState<AnyData>(null);
@@ -99,7 +105,7 @@ export default function Home() {
   const actionRef = useRef(false);
   const [offline, setOffline] = useState(false);
   const prepRef = useRef<any[]>([]);
-  const PREP_KEY = "grading-preparation-v3";
+  const PREP_KEY = "grading-domestic-preparation-v1";
   const jobRef = useRef<AnyData>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const keyRef = useRef<HTMLInputElement>(null);
@@ -122,8 +128,8 @@ export default function Home() {
   useEffect(() => {
     try{const saved=JSON.parse(localStorage.getItem(PREP_KEY)||"[]");if(Array.isArray(saved))prepRef.current=saved;}catch{}
     const draft=restorePreparationDraft(prepRef.current);
-    const savedProvider=prepRef.current.at(-1)?.provider;
-    if(savedProvider==="openai"||savedProvider==="deepseek")setSettings((previous:any)=>({...previous,provider:savedProvider,...getRequestSettings(savedProvider)}));
+    const savedProfiles=prepRef.current.at(-1)?.stageProfiles;
+    if(savedProfiles){try{validateStageProfiles(savedProfiles);setSettings((previous:any)=>settingsWithStages(previous,savedProfiles));}catch{setNotice("保存的阶段模型配置无效，请先保留备份并开启新批次。");}}
     loadJob().then(async(saved:AnyData)=>{
       if(saved){
         await hydrateDemo(saved);updateJob(saved);setPack(saved.pack);setPackApproved(true);setSettings({...defaultSettings,...saved.settings});
@@ -144,8 +150,8 @@ export default function Home() {
   useEffect(()=>{
     if(!restored||!runtimeConfig||jobRef.current)return;
     setSettings((previous:any)=>{
-      const chosen=runtimeConfig.mode==="managed"?runtimeConfig.provider:previous.provider;
-      return {...previous,provider:chosen,...getRequestSettings(chosen),credentialMode:runtimeConfig.mode==="managed"?"managed":"test",reviewProfile:runtimeConfig.reviewProfile||null};
+      const stages=runtimeConfig.mode==="managed"&&runtimeConfig.stageProfiles?runtimeConfig.stageProfiles:previous.stageProfiles;
+      return {...settingsWithStages(previous,stages),credentialMode:runtimeConfig.mode==="managed"?"managed":"test"};
     });
   },[restored,runtimeConfig,job?.id]);
   async function authenticate(code:string){
@@ -165,12 +171,12 @@ export default function Home() {
     if(!config.ready)throw Error(config.message||"服务尚未配置完成，请联系负责人。");
     if(config.mode==="managed"&&!config.authenticated)throw Error("请先填写助教访问码，验证服务使用权限。");
     if((settings.credentialMode||"test")!==(config.mode==="managed"?"managed":"test"))throw Error("本批次与当前服务模式不同，请备份后开启新批次。");
-    if(config.mode==="managed"&&settings.provider!==config.provider)throw Error("本批次服务商与负责人配置不同，请备份后开启新批次。");
-    // A batch keeps its original profile; changing administrator settings must never silently change its reviewer.
-    if(includeReview&&!((!settings.reviewProfile&&!config.reviewProfile)||profilesEqual(settings.reviewProfile,config.reviewProfile)))throw Error("复核模型配置已变化，请备份后开启新批次，不会替换本批已保存的模型结果。");
-    if(config.mode==="test"&&!apiKey.trim()){keyRef.current?.focus();throw Error(`请填写测试用 ${provider.label} API key。`);}
-    if(includeReview&&settings.reviewProfile?.provider===settings.provider&&settings.reviewProfile.model===provider.model)throw Error("初评与复核不能使用同一模型，请调整初评服务商或联系负责人配置复核模型。");
-    if(includeReview&&config.mode==="test"&&settings.reviewProfile&&settings.reviewProfile.provider!==settings.provider&&!reviewApiKey.trim())throw Error("复核使用另一服务商，请在更多设置填写对应测试密钥。");
+    validateStageProfiles(settings.stageProfiles);
+    if(config.mode==="managed"&&!stageProfilesEqual(settings.stageProfiles,config.stageProfiles))throw Error("三阶段模型配置已变化，请备份后开启新批次，不会替换本批已保存的结果。");
+    if(config.mode==="test"){
+      const required=includeReview?["grade","review"]:["prepare"];
+      for(const stage of required)if(!stageKeys[stage as keyof typeof stageKeys].trim())throw Error(`请填写第${stage==="prepare"?"一":stage==="grade"?"二":"三"}步的 ${getProvider(settings.stageProfiles[stage].provider).label} API key。`);
+    }
     return config;
   }
   useEffect(() => { const prevent=(e:BeforeUnloadEvent)=>{if(running){e.preventDefault();e.returnValue="";}};window.addEventListener("beforeunload",prevent);return()=>window.removeEventListener("beforeunload",prevent); },[running]);
@@ -253,28 +259,28 @@ export default function Home() {
   async function prepareRules(){
     if(!navigator.onLine){setNotice("当前网络未连接，请联网后整理评分规则。");return;}
 
-    if(!uploadConsent){setNotice(`请确认将本次材料发送给 ${provider.label} 进行处理。`);return;}
+    if(!uploadConsent){setNotice(`请确认将教师材料发送给 ${prepareProvider.label} 进行处理。`);return;}
     await withAction("正在整理评分规则",async()=>{
       const currentService=await ensureService();
       if(!navigator.locks)throw Error("请使用新版 Chrome 或 Edge，以防重复提交。");
       await navigator.locks.request("grading-runner",{ifAvailable:true},async lock=>{
       if(!lock)throw Error("另一个页面正在处理请求，请先暂停该页面。");
       const saved=JSON.parse(localStorage.getItem(PREP_KEY)||"[]");if(Array.isArray(saved))prepRef.current=saved;
-      if(prepRef.current.some(a=>(a.provider||"openai")!==settings.provider))throw Error("已有其他服务商的费用记录，请开启新批次后切换服务商。");
-      const {documents:docs,documentHashes,inputs}=await prepareTeachingMaterials(documents,settings.provider);
-      const reusable=restorePreparationDraft(prepRef.current,{documentHashes,provider:settings.provider});
+      if(prepRef.current.some(a=>!stageProfilesEqual(a.stageProfiles,settings.stageProfiles)))throw Error("已有其他阶段配置的费用记录，请开启新批次后切换模型。");
+      const {documents:docs,documentHashes,inputs}=await prepareTeachingMaterials(documents,prepareProfile.provider);
+      const reusable=restorePreparationDraft(prepRef.current,{documentHashes,provider:prepareProfile.provider,stageProfile:prepareProfile});
       if(reusable){setPack(reusable.pack);setPrepareResult(reusable);setPackApproved(false);setNotice("这三份材料已有保存的规则草案，已直接恢复，本次没有再次调用API。请核对后确认。");return;}
       if(prepRef.current.some(a=>a.costCny===null)&&!window.confirm("此前有规则整理请求费用未定，再次提交可能重复计费。确认继续？"))return;
       const committed=prepRef.current.reduce((n,a)=>n+(a.costCny??a.reservedCny),0);
       if(committed+settings.requestReserveCny>settings.budgetCny)throw Error("预算不足以预留这次规则整理请求，请在更多设置核对预算。");
       const requestId=crypto.randomUUID();
-      const attempt:any={id:requestId,kind:"prepare",provider:settings.provider,documentHashes,inputs,state:"in_flight",reservedCny:settings.requestReserveCny,costCny:null,sentAt:new Date().toISOString()};
+      const attempt:any={id:requestId,kind:"prepare",provider:prepareProfile.provider,stageProfile:prepareProfile,stageProfiles:settings.stageProfiles,documentHashes,inputs,state:"in_flight",reservedCny:settings.requestReserveCny,costCny:null,sentAt:new Date().toISOString()};
       prepRef.current.push(attempt);persistPrep();
       let response:Response,result:any;const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),240000);
       try{
-        response=await fetch("/api/prepare",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json",...(currentService.mode==="test"?{"X-Api-Key":apiKey.trim()}:{}),"X-Api-Provider":settings.provider},body:JSON.stringify({documents:docs,requestId}),signal:controller.signal});
-        result=await response.json();if(apiKey.trim())result=JSON.parse(JSON.stringify(result).split(apiKey.trim()).join("[REDACTED]"));
-        if(!result||typeof result!=="object"||Array.isArray(result)||(result.provider!==settings.provider&&!(!response.ok&&typeof result.error==="string"&&result.notSent===true&&result.uncertain===false&&result.estimatedCny===0)))throw Error("接口返回格式或服务商异常");
+        response=await fetch("/api/prepare",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json",...(currentService.mode==="test"?{"X-Api-Key":prepareApiKey.trim()}:{}),"X-Api-Provider":prepareProfile.provider},body:JSON.stringify({documents:docs,requestId,stageProfiles:settings.stageProfiles}),signal:controller.signal});
+        result=await response.json();for(const key of Object.values(stageKeys)){if(key.trim())result=JSON.parse(JSON.stringify(result).split(key.trim()).join("[REDACTED]"));}
+        if(!result||typeof result!=="object"||Array.isArray(result)||((result.provider!==prepareProfile.provider||response.ok&&!profilesEqual(result.stageProfile,prepareProfile))&&!(!response.ok&&typeof result.error==="string"&&result.notSent===true&&result.uncertain===false&&result.estimatedCny===0)))throw Error("接口返回格式或服务商异常");
       }catch{
         attempt.state="uncertain";attempt.uncertain=true;attempt.error="规则整理请求中断，费用未定。";persistPrep();throw Error("规则整理请求中断，可能已计费；再次提交前请核查。原预留已保留。");
       }finally{clearTimeout(timer);}
@@ -282,7 +288,7 @@ export default function Home() {
       attempt.costCny=typeof result.estimatedCny==="number"&&Number.isFinite(result.estimatedCny)&&result.estimatedCny>=0?result.estimatedCny:(!response.ok&&result.uncertain===false?0:null);
       attempt.state=response.ok?"done":result.uncertain?"uncertain":"error";persistPrep();
       if(!response.ok)throw Error(result.error||"规则识别没有完成。该请求可能已计费，请查看提示。");
-      const checked=restorePreparationDraft(prepRef.current,{provider:settings.provider});
+      const checked=restorePreparationDraft(prepRef.current,{provider:prepareProfile.provider,stageProfile:prepareProfile});
       if(!checked){attempt.state="error";persistPrep();throw Error("规则结果未通过检查，本次费用记录已保留，请核对后再试。");}
       setPack(checked.pack);setPrepareResult(checked);setPackApproved(false);
       setNotice(result.warnings?.length?"材料中有需要补充的信息，请查看下面的提示，完善后重新整理。":"评分规则已整理。核对题号、满分和评分点后，即可开始批改。");
@@ -316,18 +322,18 @@ export default function Home() {
       updateJob(next);setPack(approved);
       resultsRef.current?.scrollIntoView({behavior:"smooth"});
       setRunning(true);setRunProgress(null);stopRef.current=false;
-      try{const result=await (runJob as any)(next,{apiKey:apiKey.trim(),reviewApiKey:reviewApiKey.trim(),onChange:updateJob,onProgress:setRunProgress,shouldStop:()=>stopRef.current});setNotice(result.reason||(result.paused?"已暂停，返回的结果已保存。":result.requests===0?"本次没有发送新请求。已有结果直接复用；调用失败或费用未定的项目需查看原因、人工复核或单独确认重试。":"本轮处理完成，已保存结果。未完成项目可在下方查看原因。"));}
+      try{const result=await (runJob as any)(next,{stageKeys:Object.fromEntries(Object.entries(stageKeys).map(([stage,key])=>[stage,key.trim()])),onChange:updateJob,onProgress:setRunProgress,shouldStop:()=>stopRef.current});setNotice(result.reason||(result.paused?"已暂停，返回的结果已保存。":result.requests===0?"本次没有发送新请求。已有结果直接复用；调用失败或费用未定的项目需查看原因、人工复核或单独确认重试。":"本轮处理完成，已保存结果。未完成项目可在下方查看原因。"));}
       finally{setRunning(false);setRunProgress(null);}
     });
   }
   async function loadDemo(){
     if(job&&!window.confirm("当前进度会被新的演示替代。需要保留时请先下载进度备份。继续吗？"))return;
-    await withAction("准备演示",async()=>{const next=await studentPDFDemoJob({reviewProfile:{provider:"openai",model:"demo-review-model",reasoning:"high",outputTokens:8000,pricing:{input:1,cachedInput:1,output:5,budgetFx:7.5,version:"synthetic-demo"}}});await saveJob(next);updateJob(next);setSettings({...defaultSettings,...next.settings});setPack(next.pack);setPackApproved(true);setApiKey("");setReviewApiKey("");setSearch("");setSelectedId("");setNotice("这是每人一份PDF的合成演示，不连接 API。点击“开始演示”查看初评、模型复核及分歧确认；包含一题刻意设置的分歧。");});
+    await withAction("准备演示",async()=>{const next=await studentPDFDemoJob({stageProfiles:DEFAULT_STAGE_PROFILES});await saveJob(next);updateJob(next);setSettings({...defaultSettings,...next.settings});setPack(next.pack);setPackApproved(true);setApiKey("");setPrepareApiKey("");setReviewApiKey("");setSearch("");setSelectedId("");setNotice("这是每人一份PDF的合成演示，不连接 API。点击“开始演示”查看初评、模型复核及分歧确认；包含一题刻意设置的分歧。");});
   }
-  async function reset(){if(!window.confirm("开启新批次会替换本浏览器的当前进度。请先下载进度备份。继续吗？"))return;await clearLastJob();prepRef.current=[];localStorage.removeItem(PREP_KEY);jobRef.current=null;setJob(null);setSelectedId("");setIdentityId("");setPack(null);setPrepareResult(null);setPackApproved(false);setAnswerFiles([]);setApiKey("");setReviewApiKey("");setSettings({...defaultSettings,provider:runtimeConfig?.mode==="managed"?runtimeConfig.provider:"openai",...getRequestSettings(runtimeConfig?.mode==="managed"?runtimeConfig.provider:"openai"),credentialMode:runtimeConfig?.mode==="managed"?"managed":"test",reviewProfile:runtimeConfig?.reviewProfile||null});setNotice("已开启新批次。上次已下载的备份仍可重新导入。");}
+  async function reset(){if(!window.confirm("开启新批次会替换本浏览器的当前进度。请先下载进度备份。继续吗？"))return;await clearLastJob();prepRef.current=[];localStorage.removeItem(PREP_KEY);jobRef.current=null;setJob(null);setSelectedId("");setIdentityId("");setPack(null);setPrepareResult(null);setPackApproved(false);setAnswerFiles([]);setApiKey("");setPrepareApiKey("");setReviewApiKey("");setSettings({...settingsWithStages(defaultSettings,runtimeConfig?.mode==="managed"&&runtimeConfig.stageProfiles?runtimeConfig.stageProfiles:DEFAULT_STAGE_PROFILES),credentialMode:runtimeConfig?.mode==="managed"?"managed":"test"});setNotice("已开启新批次。上次已下载的备份仍可重新导入。");}
   function backup(){if(job)download("阅卷进度_"+job.id.slice(0,8)+".json",JSON.stringify(snapshotJob(job),null,2));}
   async function loadPack(file:File){await withAction("读取统一规则",async()=>{if(job)throw Error("请先下载当前进度并开启新批次，再更换规则。");const raw=JSON.parse(await file.text());validatePack(raw);if(raw.demo)throw Error("合成规则不能用于真实答卷，请使用真实统一规则。");setPack(raw);setPrepareResult(null);setPackApproved(true);setNotice("已导入统一规则，不需要再次上传试题、答案和细则。");});}
-  async function restore(file:File){await withAction("恢复进度",async()=>{if(job&&!window.confirm("用备份替换当前进度？请先下载当前进度以免丢失。"))return;const recovered=await restoreBackupSafely(await file.text());const restored=await hydrateDemo(recovered.job);updateJob(restored);setPack(restored.pack);setPackApproved(true);setSettings({...defaultSettings,...restored.settings});setAnswerFiles([]);setSelectedId("");setNotice(recovered.usedLocal?"本机已有该批次的进度，已恢复本机记录；没有用上传备份覆盖，以免重复提交。":restored.demo?"演示备份及原图已恢复，可直接查看或改分。":"备份已恢复。重新选择原答卷文件夹即可查看和改分；继续批改时请验证服务权限或填写测试密钥。");});}
+  async function restore(file:File){await withAction("恢复进度",async()=>{if(job&&!window.confirm("用备份替换当前进度？请先下载当前进度以免丢失。"))return;const recovered=await restoreSessionBackup(await file.text(),{hydrate:hydrateDemo,clearCredentials:()=>{setPrepareApiKey("");setApiKey("");setReviewApiKey("");}});const restored=recovered.job;updateJob(restored);setPack(restored.pack);setPackApproved(true);setSettings({...defaultSettings,...restored.settings});setAnswerFiles([]);setSelectedId("");setNotice(recovered.usedLocal?"本机已有该批次的进度，已恢复本机记录；没有用上传备份覆盖，以免重复提交。页面密钥已清空，继续批改前请重新填写。":restored.demo?"演示备份及原图已恢复，可直接查看或改分。":"备份已恢复，三步骤的页面密钥已清空。重新选择原答卷文件夹即可查看和改分；继续批改前请验证服务权限或重新填写各步骤密钥。");});}
   function closeReview(){
     if(modalBusy)return;
     if((reviewDirty||identityDirty)&&!window.confirm("有尚未保存的修改，关闭后将丢弃这些修改。继续关闭吗？"))return;
@@ -425,7 +431,7 @@ export default function Home() {
   const studentTotal=studentTasks.length&&studentTasks.every(t=>t.advice.total!==null)?Math.round(studentTasks.reduce((s,t)=>s+t.advice.total,0)*10000)/10000:null;
 
   return <div className="app-shell">
-    <header className="topbar"><a className="brand" href="/"><span className="brand-icon"><BookOpen size={22}/></span><span>阅卷助手<small>统一标准 · 自动建议 · 按需复核</small></span></a><div className="header-actions"><span className="tag"><ShieldCheck size={14}/>{runtimeConfig?.mode==="managed"?"统一服务 · 本机进度":"测试模式 · 本机进度"}</span><button className="text-button" onClick={loadDemo} disabled={disabled}>先体验演示 <ArrowRight size={15}/></button></div></header>
+    <header className="topbar"><a className="brand" href="/"><span className="brand-icon"><BookOpen size={22}/></span><span>阅卷助手 · 国内版<small>三阶段独立配置 · 原卷复核 · 本机进度</small></span></a><div className="header-actions"><span className="tag"><ShieldCheck size={14}/>{runtimeConfig?.mode==="managed"?"统一服务 · 本机进度":"测试模式 · 本机进度"}</span><button className="text-button" onClick={loadDemo} disabled={disabled}>先体验演示 <ArrowRight size={15}/></button></div></header>
     <main>
       <section className="intro"><div><span className="eyebrow">给助教的一张工作台</span><h1>把材料放进来，<br className="mobile-break"/>让批改简单一点。</h1><p>上传统一材料，选择答卷文件夹，等待建议成绩。模型复核逐点对照，有分歧时由人工确认。</p></div><div className="intro-note"><span>01 准备材料</span><ArrowRight size={16}/><span>02 初评与复核</span><ArrowRight size={16}/><span>03 导出成绩</span></div></section>
       {offline&&<div className="message" role="status"><AlertCircle size={18}/><span>当前离线 · 可查看已保存进度，联网后手动继续。</span></div>}
@@ -433,18 +439,19 @@ export default function Home() {
       {job?.demo&&<div className="demo-banner">当前为合成演示 · 不调用 API · 演示分数不代表真实评分效果 <button onClick={reset} disabled={disabled}>切换到真实批次</button></div>}
       <section className="workspace-card">
         <div className="section-title"><div><h2>准备本次批改</h2><p>只需这些材料。技术设置已经收好。</p></div><div className="quiet-links"><label className="file-link">导入统一规则<input type="file" accept=".json" disabled={disabled||!!job} onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";if(file)void loadPack(file);}}/></label><label className="file-link">恢复进度<input type="file" accept=".json" disabled={disabled} onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value="";if(file)void restore(file);}}/></label>{(job||prepRef.current.length>0)&&<button className="text-button" onClick={reset} disabled={disabled}>新批次</button>}</div></div>
-        {packApproved&&pack&&!job?.demo?<div className="pack-ready"><Check size={18}/><span>已采用统一规则：{pack.title} · {pack.questions.length} 题 · {pack.questions.reduce((a:number,q:AnyData)=>a+q.max_score,0)} 分</span>{!job&&<button className="text-button" disabled={disabled} onClick={()=>{setPack(null);setPackApproved(false);setPrepareResult(null);}}>重新选择材料</button>}</div>:<div className="document-grid">{["paper","solution","rubric"].map((role,index)=><TeachingMaterialUpload key={role} label={roleLabels[role]} number={index+1} file={documents[role]} accept={provider.id==="deepseek"?".pdf,.txt,.md,.png,.jpg,.jpeg,.webp":".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"} formatHint={(provider.id==="deepseek"?"PDF / 图片 / 文本":"PDF / Word / 图片 / 文本")+" · ≤3 MiB"} disabled={disabled||!!job} onChange={file=>{setDocuments(previous=>({...previous,[role]:file}));setPack(null);setPackApproved(false);setPrepareResult(null);}}/>)}</div>}
+        {packApproved&&pack&&!job?.demo?<div className="pack-ready"><Check size={18}/><span>已采用统一规则：{pack.title} · {pack.questions.length} 题 · {pack.questions.reduce((a:number,q:AnyData)=>a+q.max_score,0)} 分</span>{!job&&<button className="text-button" disabled={disabled} onClick={()=>{setPack(null);setPackApproved(false);setPrepareResult(null);}}>重新选择材料</button>}</div>:<div className="document-grid">{["paper","solution","rubric"].map((role,index)=><TeachingMaterialUpload key={role} label={roleLabels[role]} number={index+1} file={documents[role]} accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp" formatHint="PDF / 图片 / 文本 · ≤3 MiB" disabled={disabled||!!job} onChange={file=>{setDocuments(previous=>({...previous,[role]:file}));setPack(null);setPackApproved(false);setPrepareResult(null);}}/>)}</div>}
         <div className="input-grid"><div className="folder-section"><AnswerFileUpload files={answerFiles} individualPDFs={selectIndividualPDFs} disabled={disabled||!!job?.demo} removeAllowed={!job} onChange={chooseAnswerFolder}/><details className="folder-help"><summary>{selectIndividualPDFs?"怎样重新关联原卷？":"文件夹怎么放？"}<ChevronDown size={13}/></summary>{selectIndividualPDFs&&<p>这份进度按PDF文件名登记。请直接选择原来的PDF文件，文件名、内容和数量均须一致；无需选择整个文件夹。</p>}<p>每位同学一份扫描 PDF，命名为 <code>2026000001.pdf</code>。若有 m 道题，每份必须有 m＋1 页：第1页是姓名、学号等信息；第2页到第m＋1页依次对应第1题到第m题。无需手动拆分。</p><p>漏改文件名时尝试从首页补识别学号；身份冲突、重复学号和页数不符会单独提示。姓名读不清时留空，可手动更正。整份PDF最大64 MiB，拆出的每页最大3 MiB。完全漏收的学生需通过“更多设置”中的名单检查。</p></details>{packApproved&&answerFiles.length>0&&!job&&<button className="text-button" disabled={disabled} onClick={checkPDFs}>先检查PDF页数（不调用API）</button>}</div><ServiceAccess config={runtimeConfig} error={configError} provider={provider} apiKey={apiKey} onKey={setApiKey} keyRef={keyRef} disabled={disabled} onAuthenticate={authenticate} onSignOut={signOut} onRetry={()=>{void withAction("正在连接服务",async()=>{await refreshService();});}}/></div>
-        <div className="review-configuration"><ShieldCheck size={19}/><div><strong>{settings.reviewProfile?"已启用模型复核":"模型复核 · 等待负责人配置"}</strong><p>{settings.reviewProfile?job?.demo?"合成初评 → 合成复核。演示包含一题分歧，不连接真实模型、不计费。":`初评：${provider.model} → 复核：${settings.reviewProfile.model}。两份结果保留，评分点分歧需人工确认。`:"尚未选择复核模型。目前仅运行初评，不会额外发出付费复核请求。选定后由负责人统一设置。"}</p></div></div>
-        <details className="advanced"><summary>更多设置与费用 <ChevronDown size={14}/></summary><div className="advanced-body"><p>当前使用 {provider.label} · {provider.model}，每份PDF先识别一次首页；每题初评一次，启用模型复核时再复核一次。默认同时处理4个请求，每次完成后保存并补上下一项；不是本课程已验收模型。费用根据当前用量估算，以服务商账单为准。</p><div className="advanced-grid"><label>API 服务商<select value={settings.provider} disabled={!!job||disabled||prepRef.current.length>0||runtimeConfig?.mode==="managed"} onChange={e=>{setSettings({...settings,provider:e.target.value,...getRequestSettings(e.target.value)});setApiKey("");setReviewApiKey("");setNotice("已切换服务商，请填写对应测试密钥。开始产生请求后，本批次服务商固定。");}}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option></select></label><label>本批预算（元）<input type="number" min="5" max="5000" value={settings.budgetCny} disabled={!!job||disabled} onChange={e=>setSettings({...settings,budgetCny:Number(e.target.value)})}/></label><label>同时处理的请求数<select value={settings.concurrency} disabled={!!job||disabled} onChange={e=>setSettings({...settings,concurrency:Number(e.target.value)})}>{[1,2,4].map(n=><option key={n} value={n}>{n} 个</option>)}</select></label><label>单次费用预留（元）<input type="number" min="1" max="100" value={settings.requestReserveCny} disabled={!!job||disabled} onChange={e=>setSettings({...settings,requestReserveCny:Number(e.target.value)})}/></label></div>{runtimeConfig?.mode==="test"&&settings.reviewProfile&&settings.reviewProfile.provider!==settings.provider&&<label className="review-field">复核用 {getProvider(settings.reviewProfile.provider).label} 测试密钥<input type="password" autoComplete="off" value={reviewApiKey} disabled={disabled} onChange={e=>setReviewApiKey(e.target.value)}/><small>只在本次页面内存使用。</small></label>}<label className="roster-label">应收学号名单（选填，每行一个；可发现完全漏交的同学）<textarea rows={3} value={roster} disabled={!!job||disabled} onChange={e=>setRoster(e.target.value)} placeholder="2026001&#10;2026002"/></label><p>请求发出前先保存记录并预留费用，预算同时计入已用费用、所有在途请求和费用未定的预留。额度不足时减少实际并发或暂停。整理规则产生请求后，本批服务商固定，如需切换请开启新批次。共享 API 项目的助教可能共享限额；限流或断网后停止补发，等待在途结果保存，不自动重试可能已计费的调用。人民币换算暂按7.5作预算系数，不是实时汇率。</p>{provider.id==="deepseek"&&<p>DeepSeek 逐题评分使用 max，最多16000 token（含推理和最终结果）；首页姓名学号识别与规则整理使用 high，最多8000 token。PDF 在本机按页转为图片后发送，每份教学PDF最多20页，转换后三份材料合计仍须≤6 MiB。Word请先另存为PDF或UTF-8文本。费用按官方高峰费率保守估算，返回有效缓存用量时计入折扣；低峰或假期账单可能更低。读不清的原稿仍需人工复核。</p>}</div></details>
+        <StageConfiguration profiles={settings.stageProfiles} keys={stageKeys} managed={runtimeConfig?.mode==="managed"} disabled={disabled} locked={!!job||prepRef.current.length>0} onKey={(stage,key)=>{if(stage==="prepare")setPrepareApiKey(key);else if(stage==="grade")setApiKey(key);else setReviewApiKey(key);}} onProfile={(stage,providerId,model)=>{const stages={...settings.stageProfiles,[stage]:getDefaultProfile(providerId,stage,model)};setSettings(settingsWithStages(settings,stages));if(settings.stageProfiles[stage].provider!==providerId||settings.stageProfiles[stage].model!==stages[stage].model){if(stage==="prepare")setPrepareApiKey("");else if(stage==="grade")setApiKey("");else setReviewApiKey("");}setNotice("已更新本步骤的模型；其他步骤保持各自配置。开始产生请求后，三阶段配置锁定。");}}/>
+        <div className="review-configuration"><ShieldCheck size={19}/><div><strong>已启用独立模型复核</strong><p>{job?.demo?"合成初评 → 合成复核。演示包含一题分歧，不连接真实模型、不计费。":`初评：${settings.stageProfiles.grade.model} → 复核：${settings.stageProfiles.review.model}。复核只看原卷和评分规则，不接收初评分数；两份结果保留，评分点分歧需人工确认。`}</p></div></div>
+        <details className="advanced"><summary>更多设置与费用 <ChevronDown size={14}/></summary><div className="advanced-body"><p>默认同时处理4个请求，每次完成后保存并补上下一项。模型尚未经本课程验收，费用按各步骤的公开费率快照估算，以服务商账单为准。</p><div className="advanced-grid"><label>本批预算（元）<input type="number" min="5" max="5000" value={settings.budgetCny} disabled={!!job||disabled} onChange={e=>setSettings({...settings,budgetCny:Number(e.target.value)})}/></label><label>同时处理的请求数<select value={settings.concurrency} disabled={!!job||disabled} onChange={e=>setSettings({...settings,concurrency:Number(e.target.value)})}>{[1,2,4].map(n=><option key={n} value={n}>{n} 个</option>)}</select></label><label>单次费用预留（元）<input type="number" min="1" max="100" value={settings.requestReserveCny} disabled={!!job||disabled} onChange={e=>setSettings({...settings,requestReserveCny:Number(e.target.value)})}/></label></div><label className="roster-label">应收学号名单（选填，每行一个；可发现完全漏交的同学）<textarea rows={3} value={roster} disabled={!!job||disabled} onChange={e=>setRoster(e.target.value)} placeholder="2026001&#10;2026002"/></label><p>预算同时计入已用费用、在途请求和费用未定的预留。额度不足、限流或断网后停止补发，不自动重试可能已计费的调用。已产生请求后若需更换任一步骤，请先备份并开启新批次。</p><p>三家服务均使用国内官方接口。所有PDF在本机按页转为图片；教学PDF每份最多20页，三份材料转换后合计≤6 MiB。Word请先另存为PDF或UTF-8文本。页面关闭后密钥清空，进度保留在本浏览器。</p></div></details>
         {pack&&<div className="rule-preview"><div className="rule-heading"><h3>{pack.title || "评分规则预览"}</h3><span>{pack.questions.length} 题 · {pack.questions.reduce((s:number,q:AnyData)=>s+q.max_score,0)} 分</span></div>{prepareResult?.warnings?.length>0&&<div className="rule-warning">{prepareResult.warnings.map((w:string,i:number)=><p key={i}>{w}</p>)}</div>}<div className="question-chips">{pack.questions.map((q:AnyData)=><details key={q.question_id}><summary>{q.question_id}<b>{q.max_score} 分</b><ChevronDown size={13}/></summary><div><p>{q.text}</p><p>参考答案：{q.solution}</p>{q.criteria.map((c:AnyData)=><p key={c.criterion_id}><strong>{c.criterion_id}：</strong>{c.description}<br/><small>允许分值：{c.allowed_scores.join(" / ")}</small></p>)}</div></details>)}</div><details className="review-rules"><summary>评分政策<ChevronDown size={14}/></summary><p>{pack.policies}</p></details>{!packApproved&&!job&&<label className="checkline"><input type="checkbox" checked={packApproved} disabled={!!prepareResult?.warnings?.length} onChange={e=>setPackApproved(e.target.checked)}/>我已核对题号、满分和评分点与教师要求一致。</label>}<button className="text-button" disabled={!packApproved||disabled} onClick={async()=>{try{const p=await acceptPack();download("统一评分规则.json",JSON.stringify(p,null,2));}catch(e:any){setNotice(e.message);}}}><Download size={14}/>下载统一规则，供其他助教直接导入</button></div>}
-        {!job?.demo&&<label className="checkline upload-consent"><input type="checkbox" checked={uploadConsent} onChange={e=>setUploadConsent(e.target.checked)} disabled={disabled}/>我确认将材料发送给 {provider.label}：身份首页用于姓名、学号识别，作答页分别用于初评{settings.reviewProfile?`及 ${getProvider(settings.reviewProfile.provider).label} 模型复核`:""}，并理解会产生 API 费用。</label>}
-        <div className="start-row"><p><ShieldCheck size={16}/>{job?.demo?"演示不需要密钥，也不会联网批改":(provider.id==="deepseek"?"PDF本地拆页转图，身份与评分分别发送":"PDF本地拆页转图，身份与评分分别发送")}</p>{running?<button className="button primary" onClick={()=>{stopRef.current=true;setNotice("已停止补发；等待所有在途请求完成并保存，请先保持页面打开。");}}><Pause size={17}/>暂停批改</button>:<button className="button primary" disabled={!!busy||!restored||(!pack&&!hasDocuments)} onClick={pack?start:prepareRules}>{busy?<span className="spinner"/>:job?.demo?<Play size={17}/>:<ArrowRight size={17}/>} {busy||(!pack?"整理评分规则":job?.demo?"开始演示":job?"继续批改":"开始批改")}</button>}</div>
+        {!job?.demo&&<label className="checkline upload-consent"><input type="checkbox" checked={uploadConsent} onChange={e=>setUploadConsent(e.target.checked)} disabled={disabled}/>我确认将教师材料发送给 {prepareProvider.label} 整理规则，将身份首页与匿名作答分别发送给 {provider.label} 识别和初评，并将匿名作答发送给 {getProvider(settings.stageProfiles.review.provider).label} 独立复核，理解各步骤会产生 API 费用。</label>}
+        <div className="start-row"><p><ShieldCheck size={16}/>{job?.demo?"演示不需要密钥，也不会联网批改":"PDF本地拆页转图，身份与评分分别发送"}</p>{running?<button className="button primary" onClick={()=>{stopRef.current=true;setNotice("已停止补发；等待所有在途请求完成并保存，请先保持页面打开。");}}><Pause size={17}/>暂停批改</button>:<button className="button primary" disabled={!!busy||!restored||(!pack&&!hasDocuments)} onClick={pack?start:prepareRules}>{busy?<span className="spinner"/>:job?.demo?<Play size={17}/>:<ArrowRight size={17}/>} {busy||(!pack?"整理评分规则":job?.demo?"开始演示":job?"继续批改":"开始批改")}</button>}</div>
       </section>
       {job&&!job.demo&&job.settings.answerTransport!==ANSWER_TRANSPORT_VERSION&&<p className="rule-warning" role="status">此批次保留升级前的设置，仅可查看、导出和人工确认。请先备份，再建立新批次使用作答图片隔离；不会自动修改旧结果或继续旧请求。</p>}
       <section className="results-section" ref={resultsRef}><div className="section-title"><div><h2>建议成绩与模型复核</h2><p>初评与复核分别保留；有分歧时，对照原卷确认后再汇总。</p></div>{job&&<div className="quiet-links"><button className="text-button" onClick={backup} disabled={disabled}><Download size={15}/>进度备份</button><button className="button secondary" onClick={()=>download("AI建议成绩.csv",exportCSV(job),"text/csv;charset=utf-8")}><Download size={16}/>导出建议成绩</button></div>}</div>{!job?<div className="empty-state"><span><FileText size={32} strokeWidth={1.2}/></span><h3>成绩会出现在这里</h3><p>准备好材料后开始批改，或先体验无需密钥的演示。</p></div>:<><div className={"stats-row"+(modelReviewEnabled?" with-model-review":"")}><div><span>本批任务</span><strong>{tasks.length}<small>题</small></strong></div><div><span>已生成建议</span><strong>{completed}<small>题</small></strong></div>{modelReviewEnabled&&<div><span>模型复核完成</span><strong>{modelReviewsFinished}<small>/ {tasks.length} 题</small></strong></div>}<div><span>人工确认</span><strong>{reviewCount}<small>题</small></strong></div><div><span>费用估算 + 未决预留</span><strong className="cost">{money((job.spentCny||0)+(job.heldCny||0))}<small>/ {money(job.settings.budgetCny)}</small></strong></div></div>{running&&<p className="run-status" role="status">{phaseText} · 首页识别 {identitiesFinished} / {job.documents?.length||0} 份 · 初评 {tasks.filter(t=>t.result).length} / {tasks.length} 题{modelReviewEnabled&&` · 模型复核 ${modelReviewsFinished} / ${tasks.length} 题`}</p>}<div className="progress"><i style={{width:`${tasks.length?100*completed/tasks.length:0}%`}}/></div><div className="result-toolbar"><div className="search-box"><Search size={18}/><input aria-label="按学号搜索" value={search} onChange={e=>setSearch(e.target.value)} placeholder="输入学号、姓名或文件名查找"/></div><span>{running?`同时处理 ${activeRequests} / ${job.settings.concurrency} 个请求 · 每次完成后保存`:oneStudent?`${oneStudentLabel} · 建议总分 ${studentTotal===null?"未完成":studentTotal}`:"进度保存在此浏览器，可随时下载备份"}</span></div>{hasUncertainCost(job.preparationAttempts)&&<p className="rule-warning" role="status">规则整理仍有费用未定请求，需核查后再继续。此费用不归属学生，不计入下方题目或答卷数量。</p>}<div className="result-filters" role="group" aria-label="按处理状态筛选">{RESULT_FILTERS.map((option:any)=><button key={option.id} type="button" className={resultFilter===option.id?"active":""} aria-pressed={resultFilter===option.id} onClick={()=>setResultFilter(option.id)}>{option.label}<span>{resultCounts[option.id]} 题{job.inputMode==="student_pdf"?` / ${documentCounts[option.id]} 份`:""}</span></button>)}</div><p className="filter-help">筛选同时作用于收件和题目列表；费用未定与已完成可能重叠。待处理项目不会自动重试。</p>{job.inputMode==="student_pdf"&&<details className="pdf-collection" open><summary>PDF收件与姓名识别 <span>{filteredDocuments.length} / {job.documents.length} 份</span></summary><p>首页单独识别姓名、学号；姓名读不清不猜填。身份冲突或页数异常的答卷会暂留未完成，其余可以继续。</p><div className="table-scroll"><table><thead><tr><th>原PDF文件</th><th>页数</th><th>学号</th><th>姓名</th><th>状态</th><th></th></tr></thead><tbody>{documentPagination.items.map((d:AnyData)=><tr key={d.id}><td className="pdf-filename">{d.path}</td><td>{d.pageCount??"—"} / {d.expectedPageCount||job.pack.questions.length+1}</td><td>{d.studentId||d.filenameStudentId||"待补学号"}</td><td>{d.name||"—"}<small className="name-source">{d.nameSource==="manual"?"人工更正":d.name?"手写识别":""}</small></td><td><span className={"state "+(d.mappingStatus==="ready"?"complete":"")}>{["error","uncertain"].includes(d.identityState)?"识别未完成":identityLabels[d.mappingStatus]||d.mappingStatus}</span>{d.inputError&&<small className="document-error">{d.inputError}</small>}{d.identityError&&<small className="document-error">{d.identityError}</small>}{!d.inputError&&d.identityWarnings?.length>0&&<small className="document-error">{d.identityWarnings.join("；")}</small>}</td><td><button className="text-button" disabled={disabled} onClick={()=>chooseIdentity(d)}>查看 / 更正</button></td></tr>)}</tbody></table></div>{!filteredDocuments.length&&<p className="table-note">没有符合当前搜索和状态的答卷。</p>}<Pagination label="答卷" data={documentPagination} onChange={setDocumentPage}/></details>}
         <div className="table-scroll"><table><thead><tr><th>学号</th><th>姓名</th><th>题号</th>{modelReviewEnabled&&<><th>初评分</th><th>复核分</th></>}<th>建议分</th><th>状态</th><th>分数来源</th><th></th></tr></thead><tbody>{resultPagination.items.map((t:AnyData)=><tr key={t.id}><td className="student-cell">{t.display.studentId||"待补学号"}</td><td>{t.display.name||"—"}</td><td>{t.questionId}</td>{modelReviewEnabled&&<><td>{computeReviewComparison(t).initialTotal??"—"}</td><td>{computeReviewComparison(t).reviewTotal??"—"}</td></>}<td className="score-cell">{t.advice.total===null?"—":t.advice.total}<small> / {t.question.max_score}</small></td><td><span className={"state "+(t.advice.total!==null?"complete":"")}>{t.display.document&&t.display.status!=="ready"?(identityLabels[t.display.status]||t.display.status):t.review?"已人工确认":getTaskFlags(t).instruction?"疑似干扰指令 · 待核查":t.modelReviewState&&t.result?modelReviewLabels[computeReviewComparison(t).status]:t.result?.status==="needs_review"?"评分有待定项":stateLabels[t.state]||t.state}</span>{!t.review&&t.modelReviewError&&<small className="document-error">{t.modelReviewError}</small>}{!t.review&&t.error&&<small className="document-error">{t.error}</small>}{getTaskFlags(t).uncertain&&<small className="document-error">费用未定，请核查请求记录</small>}</td><td>{t.advice.source==="human"?"人工改分":t.advice.source==="ai_review"?"初复评一致":t.advice.source==="ai"?"初评建议":computeReviewComparison(t).status==="disagreement"?"待人工确认":"待定"}</td><td><button className="text-button" onClick={()=>chooseTask(t)}>查看 / 改分 <ArrowRight size={14}/></button></td></tr>)}</tbody></table>{!filtered.length&&<p className="table-note">没有符合当前搜索和状态的题目。</p>}</div><Pagination label="题目" data={resultPagination} onChange={setResultPage}/><p className="results-note">每题初评一次，配置后使用另一模型复核一次。复核先独立评分，再由程序比较。分歧或疑似干扰指令需要人工核查，原结果保留。缺页、读不清和调用失败不按零分处理，未完成题目使总分留空。自动结果是建议成绩，正式用途仍需教师确认。</p></>}</section>
-      <footer><span>阅卷助手 · 网页版</span><p>无需安装 · 正式服务统一配置 · 页面关闭后不会继续后台批改</p><a href={provider.pricingUrl} target="_blank" rel="noreferrer">模型与费用说明 ↗</a></footer>
+      <footer><span>阅卷助手 · 国内版</span><p>无需安装 · 正式服务统一配置 · 页面关闭后不会继续后台批改</p><a href={provider.pricingUrl} target="_blank" rel="noreferrer">模型与费用说明 ↗</a></footer>
     </main>
     {selectedIdentity&&<ReviewDialog label="身份核对" eyebrow="姓名与学号" title={selectedIdentity.path} busy={modalBusy} onClose={closeReview}>
       <ModalMessage feedback={modalFeedback}/>

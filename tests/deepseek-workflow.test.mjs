@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {handleAPI} from '../lib/grading/api-service.mjs';
-import {createStudentPDFJob,runJob,snapshotJob,importBackup,rebindJob,hashJSON,resolveStudentIdentity,prepareTeachingMaterials,readProviderFiles,restorePreparationDraft,attachPreparation} from '../lib/grading/browser-workflow.mjs';
+import {createStudentPDFJob as createDefaultStudentPDFJob,runJob,snapshotJob,importBackup,rebindJob,hashJSON,resolveStudentIdentity,prepareTeachingMaterials,readProviderFiles,restorePreparationDraft,attachPreparation} from '../lib/grading/browser-workflow.mjs';
 import {fixturePack,fixtureResult,fixtureIdentity,envelope,syntheticPDF,renderPDF,imageInfo} from './helpers/pdf-rendering.mjs';
+import {getDefaultProfile,DEFAULT_STAGE_PROFILES} from '../lib/grading/providers.mjs';
+const createStudentPDFJob=(p,f,s={},r)=>createDefaultStudentPDFJob(p,f,{reviewProfile:null,...s},r);
 const locks={request:async(_name,_options,fn)=>fn({name:'synthetic-lock'})};
 const options=extra=>({apiKey:'synthetic-key-never-persist',locks,load:async()=>null,persist:async()=>{},isOnline:()=>true,renderPDF,...extra});
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -25,7 +27,7 @@ test('DeepSeek end-to-end: real PDF images, isolated identity, scoped grades, du
     const request=new Request('https://grading.example'+url,{method:'POST',headers:{...requestOptions.headers,origin:'https://grading.example'},body:requestOptions.body});
     return handleAPI(request,kind,async(endpoint,upstreamOptions)=>{
       const sent=JSON.parse(upstreamOptions.body);upstream.push({endpoint,sent});assert.equal(endpoint,'https://api.deepseek.com/responses');
-      assert.equal(sent.reasoning.effort,kind==='identity'?'high':'max');assert.equal(sent.max_output_tokens,kind==='identity'?8000:16000);
+      assert.equal(sent.reasoning.effort,'max');assert.equal(sent.max_output_tokens,16000);
       assert.equal(durable.settings.reasoning,'max');assert.equal(durable.settings.outputTokens,16000);
       assert.ok(sent.input[0].content.some(c=>c.type==='input_image'));assert.ok(!sent.input[0].content.some(c=>c.type==='input_file'));
       return new Response(JSON.stringify(envelope(kind==='identity'?fixtureIdentity():fixtureResult(body.questionId))),{headers:{'content-type':'application/json'}});
@@ -35,7 +37,7 @@ test('DeepSeek end-to-end: real PDF images, isolated identity, scoped grades, du
   assert.equal(out.requests,3);assert.equal(browserCalls[0].url,'/api/identity');assert.equal(upstream.length,3);
   assert.ok(job.tasks.every(t=>t.state==='done'));assert.equal(job.heldCny,0);assert.ok(Math.abs(job.spentCny-0.0088425)<1e-9);
   const saved=snapshotJob(job);assert.equal(saved.formatVersion,3);assert.ok(!JSON.stringify(saved).includes('synthetic-key-never-persist'));
-  assert.deepEqual(saved.documents[0].attempts[0].response.requestSettings,{reasoning:'high',outputTokens:8000});
+  assert.deepEqual(saved.documents[0].attempts[0].response.requestSettings,{reasoning:'max',outputTokens:16000});
   assert.deepEqual(saved.tasks[0].attempts[0].response.requestSettings,{reasoning:'max',outputTokens:16000});
   assert.ok(!JSON.stringify(upstream.slice(1)).includes('900000001'));assert.ok(!JSON.stringify(upstream.slice(1)).includes('姓名栏'));
   const restored=await importBackup(saved);await rebindJob(restored,[file],{load:async()=>null});
@@ -43,7 +45,7 @@ test('DeepSeek end-to-end: real PDF images, isolated identity, scoped grades, du
   for(const mutate of [s=>s.tasks[0].attempts[0].inputs[0].sourceSha256='0'.repeat(64),s=>s.tasks[0].attempts[0].provider='openai',s=>delete s.tasks[0].attempts[0].inputs]){
     const changed=structuredClone(saved);mutate(changed);await assert.rejects(()=>importBackup(changed),/证据|服务商|校验记录/);
   }
-  const changed=structuredClone(saved);changed.settings.provider='openai';changed.settingsHash=await hashJSON(changed.settings);await assert.rejects(()=>importBackup(changed),/服务商/);
+  const changed=structuredClone(saved);changed.settings.provider='openai';changed.settingsHash=await hashJSON(changed.settings);await assert.rejects(()=>importBackup(changed),/服务商|阶段模型/);
 });
 test('DeepSeek grading settings survive backups and reject old or altered profiles without conversion',async()=>{
   const {job}=await readyJob(1),saved=snapshotJob(job);
@@ -58,9 +60,9 @@ test('DeepSeek grading settings survive backups and reject old or altered profil
     assert.equal(calls,0);
   }
   const file=new File([await syntheticPDF(2)],'900000001.pdf',{type:'application/pdf'});
-  const openai=await createStudentPDFJob(fixturePack(),[file],{provider:'openai'});
-  assert.equal(openai.settings.reasoning,'medium');assert.equal(openai.settings.outputTokens,8000);
-  assert.deepEqual((await importBackup(snapshotJob(openai))).settings,openai.settings);
+  const qwen=await createStudentPDFJob(fixturePack(),[file],{provider:'qwen'});
+  assert.equal(qwen.settings.reasoning,'max');assert.equal(qwen.settings.outputTokens,16000);
+  assert.deepEqual((await importBackup(snapshotJob(qwen))).settings,qwen.settings);
 });
 test('DeepSeek conversion failure cannot reserve fees or call the API',async()=>{
   const {job}=await readyJob();let calls=0;
@@ -75,7 +77,7 @@ test('visible progress covers local conversion before the request and waiting fo
     assert.ok(progress.some(p=>p.kind===kind&&p.phase==='reading'));
     assert.equal(progress.at(-1).kind,kind);assert.equal(progress.at(-1).phase,'waiting');
     const body=JSON.parse(opts.body);
-    return new Response(JSON.stringify({provider:'deepseek',estimatedCny:.01,...(kind==='identity'?{identity:fixtureIdentity()}:{result:fixtureResult(body.questionId)})}));
+    return new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,estimatedCny:.01,...(kind==='identity'?{identity:fixtureIdentity()}:{result:fixtureResult(body.questionId)})}));
   }}));
   assert.equal(out.requests,2);assert.equal(job.heldCny,0);
   assert.deepEqual(progress.map(p=>[p.phase,p.kind,p.questionId]),[['reading','identity',null],['waiting','identity',null],['reading','grade','Q1'],['waiting','grade','Q1']]);
@@ -83,7 +85,7 @@ test('visible progress covers local conversion before the request and waiting fo
 });
 test('unknown DeepSeek fees pause before grading and preserve the successful identity and reserve',async()=>{
   const {job}=await readyJob(2,{concurrency:1});let calls=0;
-  const out=await runJob(job,options({fetcher:async()=>{calls++;return new Response(JSON.stringify({provider:'deepseek',identity:fixtureIdentity(),estimatedCny:null,usage:null}),{status:200});}}));
+  const out=await runJob(job,options({fetcher:async()=>{calls++;return new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,identity:fixtureIdentity(),estimatedCny:null,usage:null}),{status:200});}}));
   assert.equal(out.paused,true);assert.equal(calls,1);assert.equal(job.documents[0].identityState,'done');assert.equal(job.heldCny,5);assert.ok(job.tasks.every(t=>t.state==='ready'));
   await importBackup(snapshotJob(job));
 });
@@ -96,7 +98,7 @@ test('DeepSeek still runs at most four requests and saves reversed completions s
     const gate=deferred();calls.push({body,...gate});active++;peak=Math.max(peak,active);try{return await gate.promise;}finally{active--;}
   };
   const running=runJob(job,options({fetcher,persist}));await until(()=>calls.length===4);assert.equal(active,4);
-  const result=c=>new Response(JSON.stringify({provider:'deepseek',result:fixtureResult(c.body.questionId),estimatedCny:.01}));
+  const result=c=>new Response(JSON.stringify({provider:'deepseek',stageProfile:DEFAULT_STAGE_PROFILES.grade,result:fixtureResult(c.body.questionId),estimatedCny:.01}));
   calls[2].resolve(result(calls[2]));await until(()=>calls.length===5);calls[0].resolve(result(calls[0]));await until(()=>calls.length===6);
   for(const i of [5,4,3,1])calls[i].resolve(result(calls[i]));
   const out=await running;assert.equal(out.requests,6);assert.equal(peak,4);assert.equal(peakWrites,1);assert.equal(job.heldCny,0);assert.ok(job.tasks.every(t=>t.result));await importBackup(durable);
@@ -112,9 +114,9 @@ test('DeepSeek material conversion is loss-explicit and records derived-image pr
   const file=new File([await syntheticPDF(1)],'material.pdf',{type:'application/pdf'});
   await assert.rejects(()=>readProviderFiles(file,'deepseek',{expectedHash:'0'.repeat(64),renderPDF}),/原文件内容已改变/);
   const prepared=await prepareTeachingMaterials({paper:file,solution:file,rubric:file},'deepseek',{renderPDF});
-  const draft=fixturePack();draft.approved_by='';const attempt={id:'synthetic-prepare',kind:'prepare',provider:'deepseek',inputs:prepared.inputs,documentHashes:prepared.documentHashes,state:'done',reservedCny:5,costCny:.01,response:{provider:'deepseek',pack:draft,warnings:[],estimatedCny:.01,documentHashes:prepared.documentHashes}};
+  const draft=fixturePack();draft.approved_by='';const attempt={id:'synthetic-prepare',kind:'prepare',provider:'deepseek',stageProfile:getDefaultProfile('deepseek','prepare'),inputs:prepared.inputs,documentHashes:prepared.documentHashes,state:'done',reservedCny:5,costCny:.01,response:{provider:'deepseek',stageProfile:getDefaultProfile('deepseek','prepare'),pack:draft,warnings:[],estimatedCny:.01,documentHashes:prepared.documentHashes}};
   assert.ok(restorePreparationDraft([attempt],{provider:'deepseek',documentHashes:prepared.documentHashes}));assert.equal(restorePreparationDraft([attempt],{provider:'openai'}),null);
-  const {job}=await readyJob(1);attachPreparation(job,[attempt]);assert.equal(job.spentCny,.01);await importBackup(snapshotJob(job));
+  const {job}=await readyJob(1,{stageProfiles:{...structuredClone(DEFAULT_STAGE_PROFILES),prepare:getDefaultProfile('deepseek','prepare')}});attachPreparation(job,[attempt]);assert.equal(job.spentCny,.01);await importBackup(snapshotJob(job));
   const mismatch=structuredClone(attempt);mismatch.inputs[0].sourceSha256='0'.repeat(64);assert.throws(()=>attachPreparation(job,[mismatch]),/原件与发送记录/);
   for(const mutate of [a=>a.inputs.pop(),a=>a.inputs[0].page_id='P2',a=>a.inputs[0].mime='application/pdf',a=>a.inputs[0].sha256=[a.inputs[0].sha256]]){
     const invalid=structuredClone(attempt);mutate(invalid);assert.throws(()=>attachPreparation(job,[invalid]),/材料|PDF|校验|页序/);

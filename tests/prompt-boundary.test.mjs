@@ -7,8 +7,9 @@ import {reviewResultHash} from '../lib/grading/review-profile.mjs';
 
 // These are deliberately synthetic attack surfaces and simulated model replies.
 // They verify application boundaries, not a real model's injection detection rate.
+import {DEFAULT_STAGE_PROFILES,getDefaultProfile} from '../lib/grading/providers.mjs';
 const KEY='synthetic-boundary-test-key';
-const PROFILE={provider:'openai',model:'synthetic-blind-review',reasoning:'high',outputTokens:8000,pricing:{input:1,cachedInput:1,output:2,budgetFx:7.5,version:'synthetic-only'}};
+const PROFILE=getDefaultProfile('deepseek');
 const pack=()=>({exam_id:'SYNTHETIC',title:'Synthetic',version:'v1',demo:false,approved_by:'Synthetic teacher',policies:'Score only the stated mathematical evidence.',questions:[{question_id:'Q1',text:'Compute 1+1.',solution:'2',max_score:2,criteria:[{criterion_id:'C1',description:'Correct addition',allowed_scores:[0,1,2],requires:[]}]}]});
 const result=()=>({question_id:'Q1',status:'scored',criteria:[{criterion_id:'C1',awarded:2,evidence_refs:['P1'],reason:'Synthetic visible mathematical evidence.'}],flags:[],alternative_solution:false});
 const envelope=(value=result(),output)=>({id:'synthetic-reply',status:'completed',usage:{input_tokens:100,output_tokens:20},output:output||[{type:'message',role:'assistant',content:[{type:'output_text',text:JSON.stringify(value)}]}]});
@@ -30,9 +31,10 @@ async function body(review=false,text){
   if(review)Object.assign(b,{reviewProfile:structuredClone(PROFILE),initialResult:result(),initialResultHash:await reviewResultHash(result())});
   return b;
 }
-async function call(action,b,response=envelope(),provider='openai'){
+async function call(action,b,response=envelope(),provider='deepseek'){
   const calls=[];
-  const req=new Request('https://grading.example/api/'+action,{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-key':KEY,'x-api-provider':provider},body:JSON.stringify(b)});
+  const stages=structuredClone(DEFAULT_STAGE_PROFILES);stages[action==='identity'?'grade':action]=getDefaultProfile(provider,action);if(action==='review')stages.grade=getDefaultProfile('kimi');
+  const req=new Request('https://grading.example/api/'+action,{method:'POST',headers:{origin:'https://grading.example','content-type':'application/json','x-api-key':KEY,'x-api-provider':provider},body:JSON.stringify({stageProfiles:stages,...b})});
   const res=await handleAPI(req,action,async(url,options)=>{calls.push({url,options});return new Response(JSON.stringify(response),{status:200});},{mode:'test',ready:true,reviewProfile:{...PROFILE,provider}});
   return {status:res.status,data:await res.json(),calls};
 }
@@ -137,7 +139,7 @@ test('identity and teacher preparation also carry source-data boundaries with no
   const id=await call('identity',{page,requestId:'identity-boundary'},envelope(identity));
   assert.equal(id.status,200);const idWire=JSON.parse(id.calls[0].options.body);
   assert.ok(idWire.instructions.includes('受影响字段返回null和unreadable'));assert.equal(idWire.tools,undefined);
-  const documents=['paper','solution','rubric'].map(role=>{const {page_id,...file}=page;return {role,...file};});
+  const documents=['paper','solution','rubric'].map(role=>{const {page_id,...file}=page;return {role,sourceMime:file.mime,sourceSha256:file.sha256,files:[file]};});
   const draft=pack();draft.approved_by='';
   const preparation=await call('prepare',{documents,requestId:'prepare-boundary'},envelope({pack:draft,warnings:['Synthetic material includes an instruction-like passage; verify with the teacher.']}));
   assert.equal(preparation.status,200);assert.equal(preparation.data.ready,false);
